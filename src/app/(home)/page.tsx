@@ -1,19 +1,31 @@
-import Link from 'next/link';
+import { source } from '@/lib/source';
+import { DocsLayout } from 'fumadocs-ui/layouts/docs';
+import {
+  DocsPage,
+  DocsBody,
+  DocsDescription,
+  DocsTitle,
+} from 'fumadocs-ui/page';
+import { createRelativeLink } from 'fumadocs-ui/mdx';
+import { getMDXComponents } from '@/mdx-components';
 
 export default function HomePage() {
+  const slug = source.getPage(['char-yb-portfolio']);
+  const MDXContent = slug?.data.body || (() => <div>Loading...</div>);
+
   return (
-    <main className="flex flex-1 flex-col justify-center text-center">
-      <h1 className="mb-4 text-2xl font-bold">Hello World</h1>
-      <p className="text-fd-muted-foreground">
-        You can open{' '}
-        <Link
-          href="/tech-blog"
-          className="text-fd-foreground font-semibold underline"
-        >
-          /tech-blog
-        </Link>{' '}
-        and see the documentation.
-      </p>
-    </main>
+    <DocsLayout sidebar={{ enabled:false }} tree={{ name: 'root', children: [] }} >
+      <DocsPage toc={slug?.data.toc} full={slug?.data.full}>
+        <DocsTitle>{slug?.data.title}</DocsTitle>
+        <DocsDescription>{slug?.data.description}</DocsDescription>
+        <DocsBody>
+          <MDXContent
+            components={getMDXComponents({
+              a: slug ? createRelativeLink(source, slug) : () => <a href="#">Fallback Link</a>,
+            })}
+          />
+        </DocsBody>
+      </DocsPage>
+    </DocsLayout>
   );
 }
