@@ -1,0 +1,229 @@
+---
+title: "[Spring] Argument Resolver 적용하여 유저 정보 불러오기"
+description: "Spring에서 Argument Resolver를 사용하여 유저 정보를 불러오는 방법에 대해 알아보자."
+---
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/3a09761a-c1ec-4fb3-a2d4-db912a4d4df2/image.png" alt="image" width="100%" />
+
+일단 resolver를 알고 가기 전에 컨트롤러 단에서 변수 바인딩 처리에 대해 몇개 짚고 가자.
+- 쿼리 스트링을 변수에 바인딩하려면 `@RequestParam`
+- 가변 경로의 변수를 바인딩하려면 `@PathVariable`
+- Http 요청에 의한 Body 변수를 바인딩하려면 `@RequestBody`
+
+Spring-web에서 제공되는 binding 어노테이션이 존재한다. 그 외 MultiPart 사용에 따른 RequestPart, ModelAttribute 등등 있다만 이 둘의 차이점에 대한 포스팅은 따로 다룰 것이다.
+
+그런데 아쉽게도 Http Header, Session, Cookie 등 직접적이지 않는 방식 혹은 외부 데이터 스토어로부터 바인딩이 이뤄져야 하는 경우가 있다. 그래서 해결해주는 역할로 Argument Resolver를 사용한다.
+
+---
+
+## Argument Resolver
+Argument Resolver를 사용하면 **컨트롤러 메서드의 파라미터** 중 특정 조건에 맞는 파라미터가 있다면, 요청에 들어온 값을 이용해 원하는 객체를 만들어 바인딩해줄 수 있다.
+
+
+우리가 만들 어플리케이션은 요청을 처리할 때 요청한 유저의 ID가 필요하다고 가정하자. 참고로 유저의 ID는 HTTP Authorization Bearer 헤더에 실려오는 JWT의 Payload에서 가져와야한다. 이를 컨트롤러에서 직접 구현하려면 많은 중복이 발생할 것이다.
+
+
+```java
+// 예시를 든 게시글 생성 Controller
+@PostMapping("/posts")
+public ResponseEntity<Void> createPost(CreatePostDto createPostDto, HttpServletRequest request) {
+    String token = JwtUtil.extract(request);
+    JwtUtil.validateToken(token);
+
+    String userId = JwtUtil.getPayload(token);
+    // ... post 생성 처리 로직
+}
+```
+
+매번 모든 컨트롤러에 이 중복 코드를 작성하는 것보다 나는 resolver와 어노테이션으로 해결했다.
+우선적으로 불러올 사용자 데이터 모델을 정의해보았다.
+```java
+
+import lombok.Getter;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+
+@Getter
+public class CustomUserDetails implements UserDetails {
+
+	private Long userId;
+	private final String userSnsId;
+	private final String userEmail;
+	private final String userNickname;
+	private final List<GrantedAuthority> authorityList;
+	private final String gender;
+	private final String profileImageUrl;
+
+	public CustomUserDetails(Long userId, String userSnsId, String userEmail, String userNickname, String gender, String profileImageUrl) {
+		this.userId = userId;
+		this.userSnsId = userSnsId;
+		this.authorityList = new ArrayList<>();
+		this.userEmail = userEmail;
+		this.userNickname = userNickname;
+		this.gender = gender;
+		this.profileImageUrl = profileImageUrl;
+	}
+    // 필요한 경우 아래 getter, setter 등 정의
+
+}
+```
+
+---
+
+## HandlerMethodArgumentResolver 인터페이스 
+Argument Resolver를 만들기 위해서는 클래스가 HandlerMethodArgumentResolver를 구현해야한다. HandlerMethodArgumentResolver 는 두개의 메소드를 가지고 있다.
+
+- supportsParameter() 에서는 parameter 객체의 getParameterType() 메소드를 통해 컨트롤러 메소드의 파라미터가 CustomUserDetails 타입인지 확인한다. 그리고 일치 여부를 boolean 타입으로 반환한다.
+
+- resolveArgument() 에서는 컨트롤러에서 반복된 HTTP 헤더로부터 JWT 가져오는 로직, JWT 검증 로직, JWT 페이로드 추출 로직, 유저 정보 반환 로직을 넣어준다. 그리고 최종적으로 CustomUserDetails 를 생성해서 반환한다.
+
+정의한대로 내 코드에 맞춰서 정의해보았다.
+```java
+// 생성한 LoginUsers 어노테이션을 적절히 import 할것
+import lombok.RequiredArgsConstructor;
+import org.springframework.core.MethodParameter;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.support.WebDataBinderFactory;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.springframework.web.method.support.HandlerMethodArgumentResolver;
+import org.springframework.web.method.support.ModelAndViewContainer;
+
+@Component
+@RequiredArgsConstructor
+public class LoginUserDetailsResolver implements HandlerMethodArgumentResolver {
+
+	private final SecurityService securityService;
+
+	@Override
+	public boolean supportsParameter(MethodParameter parameter) {
+		return parameter.hasParameterAnnotation(LoginUsers.class);
+	}
+
+	@Override
+	public Object resolveArgument(MethodParameter parameter,
+	                              ModelAndViewContainer mavContainer,
+	                              NativeWebRequest webRequest,
+	                              WebDataBinderFactory binderFactory) {
+        // securityService는 필자의 코드에서 인증 서비스 단을 분리하여 의존성 주입을 하였기에 인증 정보를 get하는 부분은 본인이 구현할 것!
+		return securityService.getAuthentication();
+	}
+}
+
+```
+
+---
+## HandlerMethodArgumentResolver 사용하는 이유
+HandlerMethodArgumentResolver를 사용하는 이유는, 매개변수로 사용되는 인자에 대해 공통적으로 처리해야할 로직 등이 있을 경우, 중복 코드를 줄이고 공통 기능으로 추출하여 사용할 수 있다.
+
+### 동작 방식
+Spring에서 Resolver의 동작은 아래와 같은 과정으로 이루어진다.
+
+1. Client Request 요청
+2. Dispatcher Servlet에서 해당 요청 처리
+3. Client Request에 대한 Handler Mapping
+3.1 RequestMapping에 대한 매칭 (RequestMappingHandlerAdapter가 수행)
+3.2 Interceptor 처리
+3.3 Argument Resolver 처리  Argument Resolver 실행 지점
+3.4 Message Converter 처리
+4. Controller Method invoke
+
+
+정리하자면 특정 Request가 Handler로 Mapping되는 과정에서 invoke 되기 전, Interceptor > Resolver > MessageConverter 순으로 처리된 후, Controller의 Method가 invoke 된다.
+
+
+다음으로 WebMvcConfigurer를 구현한 WebConfig 클래스에서 위와 같이 우리가 만든 LoginUserDetailsResolver 를 Argument Resolver로 등록한다.
+
+```java
+// 생성한 LoginUserDetailsResolver를 import 할 것
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.method.support.HandlerMethodArgumentResolver;
+import org.springframework.web.servlet.config.annotation.CorsRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.util.Arrays;
+import java.util.List;
+
+@Configuration
+@RequiredArgsConstructor
+public class WebMvcConfig implements WebMvcConfigurer {
+
+	private final LoginUserDetailsResolver loginUserDetailsResolver;
+
+	@Override
+	public void addArgumentResolvers(List<HandlerMethodArgumentResolver> argumentResolvers) {
+		argumentResolvers.add(loginUserDetailsResolver);
+	}
+}
+
+```
+
+---
+
+### 여기서 코드를 리뷰하다가 그럼 LoginUsers는 어디서 나온 것일까
+#### -> 바로 어노테이션으로 제한
+위와 같이 구현하면 많은 중복 로직이 사라질 수 있다. 하지만, 특정한 부분에서만 자동으로 객체가 Argument Resolver를 통해 바인딩 되도록 만들고 싶은 경우가 있을 것 이다. 
+이를 커스텀 어노테이션을 만들어서 해결할 수 있다. 아래와 같은 LoginUsers 라는 어노테이션을 만들었다.
+
+아래와 같이 LoginUsers를 구현하자
+```java
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+// 로그인 된 유저 어노테이션
+@Target(ElementType.PARAMETER)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface LoginUsers {
+}
+
+```
+위와 같이 @LoginUsers Annotation 적용 후 위 코드처럼 supportsParameter()를 구현할 시 해당 Parameter가 Resolver의 처리 지점이 된다.
+
+사용된 Annotation들의 속성은 아래와 같다.
+
+- **@interface** : 해당 파일을 Annotation Class로 지정, @ResultJWT 라는 Annotation이 생성됨
+
+- **@Target(ElementType.PARAMETER)** : 해당 Annotation이 생성될 위치 지정,
+Parameter 지정 시 Method의 Parameter에서만 사용 가능
+
+- **@Retention(RetentionPolicy.RUNTIME)** : Annotation 유지 정책을 설정,
+RUNTIME은 Byte Code File까지 Annotation 정보를 유지,
+reflection을 이용 Runtime시에 해당 Annotation 정보를 획득.
+**reflection**: 구체적인 Class Type을 알지 못해도, 그 Class의 method, type, field들에 접근할 수 있도록 해주는 Java API
+
+위와 같이 어노테이션을 정의하고 유저 데이터 모델까지 정의하면서 HandlerMethodArgumentResolver의 사용 이유와 동작 방식에 대해 이해해봤다.
+
+---
+## 실제 적용
+
+```java
+@GetMapping
+public DataResponseDto<GetUserDetailRes> usersDetails(
+	@Parameter(hidden = true) @LoginUsers CustomUserDetails userDetails
+) {
+	GetUserDetailRes getUserRes = usersService.findOneUsers(
+        userDetails.getUserId(), userDetails.getUserSnsId(),
+		userDetails.getUserNickname(), userDetails.getProfileImageUrl(),
+		userDetails.getUserEmail(), userDetails.getGender());
+	return DataResponseDto.of(getUserRes);
+}
+```
+
+위는 내가 참여하고 있는 사이드 프로젝트에서 실제 사용하는 코드이고 @LoginUsers 어노테이션을 보면 정의된 CustomUserDetails의 데이터가 resolver 로직을 타게 된다면, supportsParameter으로 타입 일치 여부 체크하고 resolveArgument으로 토큰 정보 추출하여 get하는 방식을 사용한다. 자동으로 객체가 Argument Resolver를 통해 바인딩 되도록만 만들게 된다.
+
+
+### 느낀 점
+매번 사용자 정보를 가지고 와서 권한 체크 및 유효성 체크 등 복잡한 사용자 검증과 데이터를 get하는 중복 코드를 매번 작성하는 수고를 덜어 유용한 기능에 대해 포스팅을 해보았다. Controller에 들어오는 Argument(Parameter)를 적절히 가공하여 사용자 정보가 아니여도 요구사항에 적합한 로직을 세우면 많은 활용성이 보인다.
+
+
+### 참고
+- https://hudi.blog/spring-argument-resolver/
+- https://velog.io/@gillog/Spring-HandlerMethodArgumentResolver-PathVariable-RequestHeader-RequestParam
