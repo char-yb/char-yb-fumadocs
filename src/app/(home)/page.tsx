@@ -10,7 +10,7 @@ import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { getMDXComponents } from '@/mdx-components';
 
 export default function HomePage() {
-  const slug = source.getPage(['char-yb-portfolio']);
+  const slug = source.getPage(['char-yb-introduce']);
   const MDXContent = slug?.data.body || (() => <div>Loading...</div>);
 
   return (

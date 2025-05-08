@@ -8,7 +8,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const pageTree = source.pageTree || { name: 'root', children: [] };
   const filteredPageNode = pageTree.children.filter(
     (child) => {
-      return child.$id !== 'char-yb-portfolio.mdx' && child.$id !== 'index.mdx';
+      return child.$id !== 'char-yb-introduce.mdx' && child.$id !== 'index.mdx';
     }
   )
 
