@@ -9,7 +9,6 @@ const ContactInfo: React.FC = () => {
       </div>
       <p>
         <strong>Email</strong>: uiurihappy@naver.com <br />
-        <strong>Phone</strong>: 010-2463-2396 <br />
         <strong>Github</strong>: <a href="https://github.com/char-yb">https://github.com/char-yb</a> <br />
         <strong>Velog</strong>: <a href="https://velog.io/@uiurihappy">https://velog.io/@uiurihappy</a> <br />
         <strong>LinkedIn</strong>: <a href="https://www.linkedin.com/in/yb-char-394842264">in/yb-char-394842264</a>
