@@ -4,7 +4,7 @@ const AboutMe: React.FC = () => {
   return (
     <div className="w-full md:w-1/2">
       <h1 className="text-xl font-bold mb-2">About Me</h1>
-      <div className="flex items-center bg-zinc-800 border border-gray-300 rounded-md p-4 mb-4">
+      <div className="flex items-center bg-gray-150 dark:bg-zinc-800 border border-gray-300 dark:border-gray-600 rounded-md p-4 mb-4">
         <p className="m-0">
           <strong>반갑습니다! <br />꾸준히 잔디를 심는 3년차 백엔드 개발자 차윤범입니다 :)</strong>
         </p>
