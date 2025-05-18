@@ -1,0 +1,306 @@
+---
+title: "Jacoco + Sonarcloud 로 코드 커버리지 분석하기"
+description: "Spring Boot 프로젝트에서 Jacoco와 Sonarcloud를 사용하여 코드 커버리지를 분석하는 방법에 대해 알아보자."
+---
+`이번 포스팅은 Jacoco 뿐만 아니라 Sonarcloud 내용도 있기에 조금 내용이 길 수 있다는 점 참고바랍니다.`
+
+### 왜 Jacoco랑 Sonarcloud를 둘 다 작성하게 되었는가?
+나중에 설명 나오겠지만, Jacoco는 코드 커버리지 측정한 결과를 저장한 xml 파일로 Sonarcloud에서 분석하고 취약점, 코드 스멜 등 코드 품질을 분석해주기에 동시에 보는 것이 더 깔끔하다고 생각하였다. 시리즈로 구별하기엔 페이지 왔다갔다 해야 한다.
+
+
+### Jacoco + Sonarcloud를 어떻게 알게 되었는가?
+디프만에서 프로젝트를 구성하면서 1차 스프린트로 Jacoco + Sonarcloud를 활용해 코드 커버리지 분석의 오픈소스인 Jacoco와 코드 스멜이나 버그, 취약점을 캐치하는 목적의 정적 코드 분석 플랫폼인 Sonarcloud를 접하게 되었다.
+처음 들어본 키워드였고 오픈 소스를 연결해보는 경험이 별로 없었기에 손들고 내가 하기로 했다. 그렇게 난이도는 높지 않고, 이때 아니면 경험하고 싶어도 나중으로 미룰 거 같다 생각되었다.
+
+
+---
+# Jacoco란?
+Java 진영에 <span style={{ textDecoration: "underline" }}>코드 커버리지를 측정할 때 사용하는 오픈소스 라이브러리</span>이다.
+line, branch 커버리지를 지정한 기준에 대해 측정하여 테스트 실행 후, 결과를 html, xml, csv 필요한 확장자로 파일 저장이 가능하다.
+
+> ####  여기서 Code Coverage란?
+소프트웨어 테스트를 논할 때 얼마나 테스트가 충분한 지를 나타내는 지표이다.
+테스트를 진행했을 때 코드 자체가 얼마나 실행되었냐는 것을 측정
+
+구성하는 데에는 그렇게 많은 러닝커브 필요하지 않다. 바로 Setting 해볼 것이다.
+
+
+## 1️⃣ build.gradle plugin 추가
+```java
+plugins {
+    id 'jacoco'
+}
+
+...
+
+jacoco {
+    toolVersion = "0.8.8"
+}
+
+```
+
+별거 없다. plugin 설치는 이렇게 추가하고 jacoco 릴리즈 버전에 맞춰서 작성해주면 된다. 릴리즈 버전은 [여기](https://www.eclemma.org/jacoco/)를 참고하면 된다.
+
+## 2️⃣ JacocoTestCoverageVerification
+JacocoTestCoverageVerification는 Jacoco 테스트 커버리지를 위한 rule이라 보면 된다.
+```java
+
+def QDomains = []
+for (qPattern in '*.QA'..'*.QZ') { // qPattern = '*.QA', '*.QB', ... '*.QZ'
+    QDomains.add(qPattern + '*')
+}
+
+def jacocoExcludePatterns = [
+        // 측정 안하고 싶은 패턴
+        "**/*Application*",
+        "**/*Config*",
+        "**/*Exception*",
+        "**/*Request*",
+        "**/*Response*",
+        "**/*Dto*",
+        "**/*Interceptor*",
+        "**/*Filter*",
+        "**/*Resolver*",
+        "**/*Entity*",
+        "**/test/**",
+        "**/resources/**"
+]
+
+jacocoTestCoverageVerification {
+
+    violationRules {
+        rule {
+            // rule 활성화
+            enabled = true
+
+            // 클래스 단위로 룰 체크
+            element = 'CLASS'
+
+            // 라인 커버리지를 최소 80% 만족
+            limit {
+                counter = 'LINE'
+                value = 'COVEREDRATIO'
+                minimum = 0.80
+            }
+            
+            // 브랜치 커버리지를 최소 80% 만족
+            limit {
+                counter = 'BRANCH'
+                value = 'COVEREDRATIO'
+                minimum = 0.80
+            }
+            
+            excludes = jacocoExcludePatterns + QDomains
+        }
+    }
+}
+```
+이와 같이 라인, 브랜치 커버리지를 설정하고 rule를 정할 수 있다.
+여기서 jacocoExcludePatterns는 주석에도 달았듯이 측정 안하고 싶은 Java 파일들을 명시한 것이다.
+그리고 QDomains는 QueryDsl을 사용하기 build 시 Q클래스가 생성되어 제외시키기 위해 생성된 배열이다.
+
+## 3️⃣ JacocoTestReport
+
+위에서 정의한 JacocoTestCoverageVerification의 rule로 JacocoTestReport는 이제 검사하고자 한다.
+```java
+
+tasks.named('test') {
+    useJUnitPlatform()
+    finalizedBy 'jacocoTestReport'
+}
+
+def jacocoDir = layout.buildDirectory.dir("reports/")
+
+jacocoTestReport {
+    dependsOn test	// 테스트가 수행되어야만 report를 생성할 수 있도록 설정
+    reports {
+        html.required.set(true)
+        xml.required.set(true)
+        csv.required.set(true)
+        html.destination jacocoDir.get().file("jacoco/index.html").asFile
+        xml.destination jacocoDir.get().file("jacoco/index.xml").asFile
+        csv.destination jacocoDir.get().file("jacoco/index.csv").asFile
+    }
+
+    afterEvaluate {
+        classDirectories.setFrom(
+                files(classDirectories.files.collect {
+                    fileTree(dir: it, excludes: jacocoExcludePatterns + QDomains) // Querydsl 관련 제거
+                })
+        )
+    }
+    finalizedBy jacocoTestCoverageVerification
+}
+```
+JacocoTestReport에서 reports는 html, xml, csv를 생성할 수 있도록 설정하였고, 전역 변수로 생성한 jacocoDir은 build 디렉토리 하위로 reports를 생성하여 report 파일을 해당 경로에 생성할 수 있도록 설정하였다.
+또한 afterEvaluate로 특정 파일 및 디렉토리(jacocoExcludePatterns + QDomains)를 제외하기 위해 설정하였다.
+
+
+## 🎊 실행 결과
+
+설정을 다 마쳤다.
+그럼 build.gradle를 다시 refresh하고 gradle 항목에서 왼쪽 이미지에 있는 jacocoTestReport를 실행해보자
+실행이 되면 아래 build 파일에 정상적으로 reports/jacoco 경로에 설정한 파일들이 저장되어 있을 것이다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/3b0857d1-4dde-40f1-af2d-fbb4585308d7/image.png" /> | <img src="https://velog.velcdn.com/images/uiurihappy/post/388ab77b-1876-415d-9bcc-ac8e0a8e596f/image.png" /> 
+---|---|
+
+경로에 있는 index.html을 크롬으로 실행하여 이와 같이 결과 report를 확인할 수 있다.
+<img src="https://velog.velcdn.com/images/uiurihappy/post/f3d1477a-feb5-400b-b352-41f373109236/image.png" alt="image" width="100%" />
+
+이제는 Sonarcloud와 연동을 해볼 것이다.
+
+
+---
+# Sonarcloud?
+<span style={{ textDecoration: "underline" }}>정적 코드 분석 플랫폼인 SonarCloud 또한 SonarQube와 같이 코드 품질을 관리하기 위해 사용하는 도구</span>이다. Github과 Bitbucket 같은 코드 저장소와 원활하게 통합되어 코드 품질 분석의 자동화를 편리하게 지원한다.
+SonarCloud는 클라우드 기반의 호스팅 서비스로 SonarQube와 유사한 기능을 제공하지만 클라우드 상에서 서비스를 제공하기 때문에 자체 서버를 설치하거나 유지 관리할 필요가 없다.
+
+> #### 🛠 여기서 정적 코드 분석이란?
+정적 코드 분석이란 단어 그대로 소스 코드를 실행하지 않고 정적으로 코드를 분석하는 것을 뜻한다.
+소스 코드의 품질을 높이기 위해 잠재적인 버그나 코딩 컨벤션에 어긋난 부분을 찾는 것을 의미한다.
+
+### ✨ 정적 코드 분석을 사용하는 이유는?
+정적 코드 분석을 사용하면 흔히 코드 스멜(code smell) 이라고 불리는 문제들과 보안 취약점 등의 문제를 사전에 찾아낼 수 있습니다.
+
+- 잠재적으로 버그가 발생할 수도 있는 코드를 찾을 수 있다.
+- 코드 스타일(코딩 컨벤션) 위반 여부를 판단할 수 있다.
+- 오타를 찾아낼 수 있다.
+- 사용되지 않는 코드를 찾아낼 수 있다.
+- 잠재적인 보안 취약점을 발견할 수 있다.
+
+## 1️⃣ SonarCloud 계정 만들기
+[Sonarcloud signUp 링크](https://www.sonarsource.com/products/sonarcloud/signup/)로 통해 회원가입이 가능하다. 
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/bc542028-af9f-4604-b237-e054f658ac93/image.png" alt="image" width="100%" />
+
+## 2️⃣ SonarCloud Organization 생성 및 설치
+필자는 이미 디프만 organization이 존재하기에 프로젝트를 맞춰 설정해주었다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/9c324a06-4dd5-470a-817b-625634f80b42/image.png" alt="image" width="100%" />
+
+위 Import an organization from Github를 통해 설치하여 프로젝트를 연동하였다.
+아래 참고 링크를 통해 확인하여 Project에 설치할 수 있도록 하자
+
+## 3️⃣ Project 확인
+<img src="https://velog.velcdn.com/images/uiurihappy/post/6c510dbb-9cdb-470b-bfb2-5d8ec0672004/image.png" alt="image" width="100%" />
+
+설치가 되었다면 이렇게 대시보드가 보이는 것을 확인할 수 있을 것이다.
+
+## 4️⃣ Automatic Analysis Disable
+
+
+SonarCloud는 기본적으로 Automatic Analysis를 지원한다. 그러나 우리는 CI 작업 과정에서 분석을 수행할 것이기 때문에 해당 옵션은 off 후 진행할 것이다. (CI-based Analysis는 Automatic Analysis와 함께 실행하면 충돌이 나므로 반드시 비활성화 해야 한다.)
+
+만약 CI-based Analysis를 할 것인데 Automatic Analysis를 동시에 하게 되면 
+`You are running CI analysis while Automatic Analysis is enabled. Please consider disabling one or the other.` 에러를 발견할 것이다. 실제로 이 에러 접하였고, Organization Admin 권한으로 Analysis 옵션을 disable 했다.
+
+1. Administration -> Analysis Method
+2. Automatic Analysis disable
+
+아래 링크를 첨부했으니 projectKey는 프로젝트 information에서 확인 가능하니 알맞게 수정하고 링크를 접속하자.
+https://sonarcloud.io/project/analysis_method?id={projectKey}
+
+## 5️⃣ Spring boot Setting
+Sonarcloud 연결과 세팅을 마쳤으니 프로젝트에서 plugIn과 세팅을 해볼 것이다.
+본 세팅은 gradle 환경에서 구성했다.
+
+```java
+// build.gradle
+plugins {
+	...
+    id 'jacoco'
+    id 'org.sonarqube' version '4.4.1.3373'
+}
+...
+sonar {
+    properties {
+        property "sonar.projectKey", "depromeet_10mm-server"
+        property "sonar.organization", "depromeet-1"
+        property "sonar.host.url", "https://sonarcloud.io"
+        property 'sonar.sources', 'src'
+        property 'sonar.language', 'java'
+        property 'sonar.sourceEncoding', 'UTF-8'
+        property 'sonar.test.exclusions', jacocoExcludePatterns.join(',')
+        property 'sonar.test.inclusions', '**/*Test.java'
+        property 'sonar.java.coveragePlugin', 'jacoco'
+        property 'sonar.coverage.jacoco.xmlReportPaths', jacocoDir.get().file("jacoco/index.xml").asFile
+    }
+}
+
+```
+gradle에서는 이게 전부다.
+SonarCloud 기본 설정만으로는 프로젝트의 Test Coverage를 확인할 수 없기 때문에 추가적인 설정이 필요하다! 그래서 Jacoco로 검사한 Test Coverage 결과를 xml로 저장하여 Sonarcloud 테스트 커버리지 검사할 때 사용된다. 참고 링크 3번째 링크에 언어 환경에 알맞은 설정 내용이 있다.
+
+## 6️⃣ Github Actions Workflow Setting
+이제 Setting한 gradle 내용으로 CI 환경에서 구동 및 테스트를 진행할 것이다.
+
+```yaml
+name: develop(pull_request) Check Style And Test
+on:
+  pull_request:
+    branches:
+      - develop
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java-version: [ 17 ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          java-version: ${{ matrix.java-version }}
+          distribution: 'adopt'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v2
+        with:
+          arguments: check
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/develop' }}
+
+      - name: SonarCloud scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: ./gradlew sonar --info --stacktrace
+
+```
+이와 같이 필자의 프로젝트는 PR시 실행되는 CI workflow 파일이다.
+sonarcloud에서 실행된 내용은 ~/.sonar/cache 디렉토리에 캐싱할 수 있도록 path를 설정하였다.
+그리고 이 workflow에서 sonar를 실행하기 위해 두 가지 secrets를 사용하는데
+- `GITHUB_TOKEN`: Github에서 제공되는 Token이기에 별도 설정이 없어도 된다.
+- `SONAR_TOKEN`: Sonarcloud에 대한 액세스를 인증하는 데에 사용되는 토큰이다. 해당 [링크](https://sonarcloud.io/account/security/)에서 토큰을 발급받을 수 있다.
+
+발급받은 토큰은 Repository secrets 환경 변수로 등록하여 진행하면 된다. 등록하는 법은 어렵지 않기에 별도 설명은 생략할 것이다.
+
+
+## ⭐️ 결과 확인
+진행했던 브랜치에 PR을 올리고 Github Actions CI로 진행된 결과 아래와 같은 결과를 얻을 수 있다.
+현재는 프로젝트 초기이기에 No Coverage Information, No Duplication information 이렇게 보일 수 있는데
+<img src="https://velog.velcdn.com/images/uiurihappy/post/09dd9033-28a2-46e7-9a13-177efb0d6fc2/image.png" alt="image" width="100%" />
+
+Jacoco에서 설정했던 라인, 브랜치 커버리지 설정을 했다면 아래와 같은 결과도 얻을 수 있고, 링크따라 코드 스멜, 버그, 취약성 분석 결과가 보여지니 활용하는 용도가 여러 방면이 있을 수 있다.
+<img src="https://velog.velcdn.com/images/uiurihappy/post/cc377df6-853e-40da-bcff-222cf8aaf1b7/image.png" alt="image" width="100%" />
+
+
+
+### 참고
+- https://velog.io/@chaerim1001/Springboot-%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B8-SonarCloud%EB%A1%9C-%EC%A0%95%EC%A0%81-%EC%BD%94%EB%93%9C-%EB%B6%84%EC%84%9D%ED%95%98%EA%B8%B0-with-github-actions
+- https://docs.sonarsource.com/sonarcloud/advanced-setup/automatic-analysis/
+- https://docs.sonarsource.com/sonarcloud/enriching/test-coverage/overview/
+
