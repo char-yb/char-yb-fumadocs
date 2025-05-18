@@ -1,0 +1,151 @@
+---
+title: "JPA Embedded, Embeddable 사용기"
+description: "JPA Embedded, Embeddable 사용하면서"
+---
+이번엔 Embedded, Embeddable에 대한 간단한 포스팅으로 이뤄질 듯하다.
+
+### 포스팅한 계기
+디프만 프로젝트 중 Querydsl 환경 구성을 하게 되면서 겪었던 문제였다.
+
+
+
+해당 [PR](https://github.com/depromeet/10mm-server/pull/64)에서 querydsl 의존성을 추가해주고 기존 Member 클래스에 정의했던 
+```java
+@Embeddable
+@NoArgsConstructor
+public record Profile(String nickname, String profileImageUrl) {}
+```
+Profile record가 `Illegal type: com.depromeet.domain.nember.domain.Profile`
+이와 같은 에러를 발생하고 있었다.
+
+처음엔 "아 뭐지.. 내가 뭔가 놓쳤나" 그래서 빈 생성자를 선언할 때 뭔가 잘못됐나 싶었지만, 구글링을 하면서 querydsl 오픈소스 이슈와 PR들을 보게 되었다.
+
+https://github.com/querydsl/querydsl/issues/3365
+
+해당 이슈를 확인해보면 querydsl 오픈소스에 record에 대한 타입 체크는 해결된 것으로 보이는데, 업데이트는 되어있지 않아 제대로 적용되지는 않는 것을 확인하였다.
+
+그래서 "이것봐라..?" 싶었지만 찾았으니 뿌듯하기도 하고 이번 계기로 인해 간단하게 Embedded, Embeddable 정의와 사용 예시로 포스팅을 하려 했다.
+
+---
+# 임베디드 타입
+임베디드 타입은 새로운 값 타입을 직접 정의해서 사용하여 작성되어 있던 엔티티에 추가 정의한 타입이다.
+
+```java
+// user.java
+@Entity
+public class User {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String name;
+
+    private String email;
+
+    @Enumerated(value = EnumType.STRING)
+    private Gender gender;
+    
+    // 주소 정보
+    private String city; // 도시
+    private String district; // 구
+    private String detail; // 상세주소
+    private String zipCode; // 우편번호
+}
+```
+이처럼 주소 정보는 주소라는 주된 집합체인데, User라는 사용자 엔티티에 넣는 것은 응집력을 떨어뜨리기에, 임베디드 타입으로 정의하여 조금 더 객체지향적인 프로그래밍으로 바꿀 수가 있다.
+그렇기에 `@Embedded`, `@Embeddable`을 사용하는 것이다.
+
+--- 
+## Embeddable
+Embeddable은 JPA는 클래스가 다른 항목에 삽입될 것임을 선언하기 위해 `@Embeddable` 어노테이션을 제공한다. 그렇다면 직접 user 엔티티에 정의된 주소 정보를 새 클래스로 정의해보겠다.
+
+```java
+// Address.java
+@Embeddable
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class Address {
+    // 주소 정보
+    private String city; // 도시
+    private String district; // 구
+    private String detail; // 상세 주소
+    private String zipCode; // 우편번호
+}
+```
+이처럼 `@Embeddable`을 넣어주고 `@NoArgsConstructor`, `@AllArgsConstructor`으로 빈 생성자 생성과, 주소 객체를 생성하기 위한 AllArgsConstructor을 넣어준다. 추가로 `@Data` 어노테이션을 넣어줄 수 있지만, 사용하는 용도에 따라 넣어주는 게 맞을 것이다. Setter 함수가 호출되어 의도치않는 데이터가 들어갈 수 있기 때문이다. 나중에 `@Data` 어노테이션에 대해 포스팅할 기회가 있다면 포스팅하려 한다.
+
+--- 
+## Embedded
+`@Embedded`는 엔티티에 다른 항목에 주입하는 데 사용된다. 이해가 안된다면 단어 의미적으로 생각하면 단순하다.
+이전에 설명한 Embeddable은 말 그래도 `내장될 수도 있는`이라는 뜻을 가지고 있다.
+그렇다면 Embedded는 `내장된`이라는 뜻을 가지고 있기에 아까 정의한 user 엔티티에서
+
+```java
+// user.java
+@Entity
+public class User {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String name;
+
+    private String email; 
+
+    @Enumerated(value = EnumType.STRING)
+    private Gender gender;
+    
+    @Embedded
+    private Address address;
+
+}
+```
+이렇게 표현할 수 있다. user 엔티티는 Address라는 객체가 `내장된(Embedded)` 엔티티이다.
+
+---
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/b51f7b18-73c9-499d-aad8-e7710f02ce3b/image.png" alt="image" width="500px" />
+
+위 표현대로 user 객체를 생성하면 이렇게 주소, Address 객체가 그대로 생성되는 것을 확인할 수 있다. 그런데 이제 user 객체에 우리 집 주소는 OK, 근데 요구사항으로 회사 주소를 넣어주는 요청 사항이 왔다.
+
+좀 찾아보면 Attributes Override을 사용하면 된다고 한다. `@AttributeOverrides`, `@AttributeOverride`를 사용하면 된다. 이건 뭐지? 싶을 수 있다. `@AttributeOverrides`는 여러 개의 `@AttributeOverride`를 포함하는 어노테이션이다. `@AttributeOverride`는 속성의 이름과 매핑할 열을 지정하는 데 사용된다.
+
+`@AttributeOverride`는 `@Embeddable` 클래스의 속성에 대한 매핑을 재정의하는 데 사용된다. 즉, `@AttributeOverride`는 `@Embeddable` 클래스의 속성을 재정의하는 것이다.
+
+예시로는 회사의 주소, 집 주소의 주소 형태는 시, 구, 상세주소, 우편번호로 동일하다. 이러한 경우 `@Embedded`와 `@AttributeOverrides`, `@AttributeOverride`를 통해 하나의 class를 사용해 여러 표현을 할 수 있다. 객체를 재활용해서 해결하는 것이다.
+
+아래의 코드는 객체를 재활용하는 대신 `@AttributeOverrides`, `@AttributeOverride`를 사용해 column의 이름을 전부 재정의하여 사용하기에 코드가 지저분해 보일 수 있다. -> 객체를 재활용 하지 않고 따로 선언해서 하는 대신 깔끔하게 보이는 코드를 작성할 지, 객체의 재활용을 하는 코드를 작성할지는 개발자가 결정해야 한다.
+
+```java
+@Entity
+public class User {
+    @Embedded
+    @AttributeOverrides({
+            @AttributeOverride(name = "city", column = @Column(name = "home_city")), // city를 home_city라는 column명으로 사용
+            @AttributeOverride(name = "district", column = @Column(name = "home_district")),
+            @AttributeOverride(name = "detail", column = @Column(name = "home_address_detail")),
+            @AttributeOverride(name = "zipCode", column = @Column(name = "home_zipCode"))
+    })
+    private Address homeAddress;
+
+    @Embedded
+    @AttributeOverrides({
+            @AttributeOverride(name = "city", column = @Column(name = "company_city")),
+            @AttributeOverride(name = "district", column = @Column(name = "company_district")),
+            @AttributeOverride(name = "detail", column = @Column(name = "company_address_detail")),
+            @AttributeOverride(name = "zipCode", column = @Column(name = "company_zipCode"))
+    })
+    private Address companyAddress;
+}
+```
+이처럼 해결하면 생성될 때 company가 붙은 주소 객체를 확인할 수 있다.
+
+
+### 참고
+- https://www.baeldung.com/jpa-embedded-embeddable
+- https://velog.io/@seongwon97/Spring-Boot-JPA-Embedded-Embeddable
+
+
+
+
