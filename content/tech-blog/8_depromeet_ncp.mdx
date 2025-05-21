@@ -1,0 +1,95 @@
+---
+title: "디프만에서 첫 NCP 사용기"
+description: "디프만 14기 활동에서 처음 NCP를 사용한 경험을 공유합니다."
+tags: \["NCP", "디프만", "클라우드"]
+---
+
+# NCP(Naver Cloud Platform)란?
+
+NCP는 네이버가 제공하는 국내 클라우드 인프라 서비스입니다. AWS, GCP 등 글로벌 클라우드 플랫폼과 비교했을 때, 한국어 기반 UI와 친숙한 문서 덕분에 접근성이 뛰어났습니다.
+
+## 시작해볼까?
+
+디프만 14기에서 [10MM](https://10mm.today)라는 프로젝트로, 하루 10분 습관 형성 챌린지 서비스를 개발 중입니다. 이 과정에서 NCP 크레딧 20만 원을 지원받아 서버 비용을 아낄 수 있었고, 저에겐 첫 NCP 도전이기도 했습니다.
+
+### 🔗 관련 링크
+
+* [10MM 서버 GitHub](https://github.com/depromeet/10mm-server)
+* [앱스토어](https://apps.apple.com/kr/app/10%EB%B6%84%EB%A7%8C-10mm-%ED%95%98%EB%A3%A8-10%EB%B6%84%EC%9C%BC%EB%A1%9C-%EC%8B%9C%EC%9E%91%ED%95%98%EB%8A%94-%EC%8A%B5%EA%B4%80/id6475635740) / [구글 플레이](https://play.google.com/store/apps/details?id=com.tenminuteapp)
+
+---
+
+## 📐 1차 MVP 아키텍처 구성
+
+<div align="center">
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/8196ed14-221c-45c2-a0a5-3abd8de23e22/image.png" width="90%" />
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/d34c7263-9341-48c4-8a54-ac035931e84d/image.png" width="90%" />
+</div>
+
+GitHub Actions로 CI/CD 파이프라인을 구성하고, 컨테이너 관리는 NCP Container Registry를 활용합니다. 콘텐츠 관리는 Object Storage, 데이터베이스는 MySQL, 캐시는 Redis, 그리고 CDN 및 Load Balancer까지 다양한 NCP 서비스를 도입했습니다.
+
+<div align="center">
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/eab570c0-0cce-4300-b797-feef5aa4c8bd/image.png" width="100%" />
+</div>
+
+NCP 콘솔에서 보이는 대시보드는 AWS 사용자였던 저에게도 익숙한 UI와 네이밍으로 빠르게 적응할 수 있었습니다.
+
+---
+
+# 🔍 대표 서비스 소개
+
+## 1. Server
+
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/11cb74f7-760c-4935-bf68-aa57a20fa128/image.png" width="90%" />
+
+NCP Server는 인스턴스 스펙, 디스크, 보안 설정 등을 자유롭게 구성할 수 있고, 실시간 리소스 모니터링과 외부 접속을 위한 포트 포워딩 설정도 가능합니다.
+
+## 2. Object Storage
+
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/59718c83-59a0-4dfb-a158-7b803242f70f/image.png" width="90%" />
+
+Object Storage는 AWS의 S3와 유사한 서비스입니다. 이미지, 동영상 저장 및 컨테이너 레지스트리 연동에 활용했습니다. 또한 S3와 호환되는 API를 제공해 다양한 툴과 연동이 용이하며, Presigned URL 및 CORS 설정도 지원합니다.
+👉 관련 이슈: [Object Storage CORS 제어 히스토리](https://github.com/depromeet/10mm-server/issues/125)
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/c30e932c-07a9-4d88-befb-79206d59d7e4/image.png" width="90%" />
+
+## 3. Container Registry
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/a10da78d-1c5f-4cff-b62c-37d76abe8e83/image.png" width="90%" />
+
+Container Registry는 자체 DockerHub 역할을 하며, 이미지 저장부터 배포까지 자동화에 유리합니다. GitHub Actions로 빌드 & 배포를 설정하였고, 아래는 일부 CI/CD 스크립트입니다.
+
+```yaml
+# 로그인, 빌드, 배포 스크립트 생략 – 위 원문 참조
+```
+
+이 과정을 함께 준비한 [도모](https://github.com/kdomo), [유우비트](https://github.com/uwoobeat)에게 감사를 보냅니다 👏
+
+---
+
+### 💸 디프만에서 크레딧 지원을?
+
+맞습니다. 디프만 후원사인 NCP에서 초기에 20만 크레딧을 지원받아 서버를 구성하고 다양한 시도를 할 수 있었습니다. 현재는 Global Edge, Load Balancer까지 붙여서 상용 배포 중이고, 추가로 70만 크레딧까지 확보하여 고도화를 진행 중입니다.
+(서버 스펙이 조금 아쉽긴 해요... 메모리가 후달려요 😅)
+
+---
+
+## ✅ 만족한 점 vs 아쉬운 점
+
+**만족한 점**
+
+* 국내 플랫폼이라 러닝커브가 낮고, 콘솔이 직관적
+* 문서와 UI가 친숙해서 빠르게 서비스 구성 가능
+
+**아쉬운 점**
+
+* 일부 서비스 생성이 느리거나, 인증서 리스트 누락 현상이 있음
+* AWS에 비해 VPC 기반 아님에도 비용이 다소 높게 책정됨
+
+---
+
+# 🔭 향후 계획
+
+일단 현재는 NCP 사용에 만족하고 있고, 계속 사용하면서 고도화를 진행 중입니다. UI/UX에서 약간의 아쉬움은 있지만, 문서나 기능은 꽤 충실하다는 느낌이 들어 몇 개월간은 무리 없이 사용 가능할 것으로 보입니다. 내부적으로는 이후 AWS로 마이그레이션 여부도 함께 검토할 예정입니다.
+
+---
