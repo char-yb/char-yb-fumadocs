@@ -1,0 +1,187 @@
+---
+title: "Transactional에 대해"
+description: "Spring에서 사용되는 Transactional에 대해 알아보았습니다."
+---
+
+## 서론
+
+> Spring에서 사용되는 Transactional에 대한 면접 질문을 받았을 때, 막상 대답하려다 얼버무리게 되어 내부 구조와 트랜잭션의 성질 등을 제대로 공부하고자 합니다. 이번 글에서는 이를 파헤쳐보고, 이후에는 격리 수준과 비관적/낙관적 락에 대해서도 다룰 예정입니다.
+
+Spring 프로젝트를 개발할 때 흔히 `@Transactional` 어노테이션을 붙여 트랜잭션의 시작(Begin), 반영(Commit), 오류 시 원복(Rollback) 구조로 인식하고 사용하곤 했습니다. 읽기 전용 트랜잭션에서는 `readonly = true` 옵션을 사용하는 방식도 암묵적으로 널리 사용되고 있습니다.
+
+이 글에서는 Transactional의 개념부터 시작해 관련 옵션들까지 꼬리에 꼬리를 무는 형식으로 정리해보겠습니다.
+
+우선 트랜잭션의 4가지 주요 성질은 다음과 같습니다.
+
+> **1. 원자성(Atomicity)**: 트랜잭션 내의 모든 작업은 하나의 단위로 처리되며, 모두 성공하거나 모두 실패해야 합니다. <br />
+**2. 일관성(Consistency)**: 트랜잭션 전후의 데이터는 항상 일관된 상태를 유지해야 합니다. <br />
+**3. 격리성(Isolation)**: 동시에 수행되는 트랜잭션들이 서로 영향을 주지 않도록 격리되어야 합니다. <br />
+**4. 지속성(Durability)**: 트랜잭션이 성공적으로 수행되면 그 결과는 영구적으로 저장되어야 합니다. <br />
+
+개인적으로는 격리성과 일관성이 특히 중요하다고 생각합니다. 물론 네 가지 모두 핵심적인 성질입니다.
+
+---
+
+## @Transactional 이란?
+
+**데이터베이스 작업에서 트랜잭션을 선언적으로 관리하기 위한 어노테이션**입니다. 이 어노테이션은 클래스 또는 메서드 수준에 적용할 수 있습니다.
+
+### 우선순위
+
+Transactional 어노테이션은 다음 순서로 우선 적용됩니다:
+
+1. 클래스의 메서드
+2. 클래스
+3. 인터페이스의 메서드
+4. 인터페이스 전체
+
+클래스 수준에서 적용 시 해당 클래스의 모든 메서드에 기본 설정이 적용되고, 메서드 수준에선 클래스 설정을 오버라이드합니다.
+
+단, 주의할 점은 `@Transactional`은 Spring AOP 기반으로 작동하며, 기본적으로 Dynamic Proxy를 사용합니다. 이는 인터페이스 기반이기 때문에, 클래스 기반 트랜잭션이 필요한 경우엔 CGLib 프록시를 사용해야 합니다.
+
+결론적으로 `@Transactional`은 프록시 객체를 생성해 메서드 실행 전 `PlatformTransactionManager`를 사용하여 트랜잭션을 시작하고, 예외 유무에 따라 Commit 또는 Rollback을 수행합니다.
+
+#### Commit과 Rollback
+
+* **Commit**: CheckedException 또는 예외가 없는 경우
+* **Rollback**: UncheckedException(RuntimeException, Error 등)이 발생한 경우
+
+---
+
+## Transactional 옵션들
+
+```java
+public @interface Transactional {
+    String value() default "";
+    String transactionManager() default "";
+    String[] label() default {};
+    Propagation propagation() default Propagation.REQUIRED;
+    Isolation isolation() default Isolation.DEFAULT;
+    int timeout() default -1;
+    String timeoutString() default "";
+    boolean readOnly() default false;
+    Class<? extends Throwable>[] rollbackFor() default {};
+    String[] rollbackForClassName() default {};
+    Class<? extends Throwable>[] noRollbackFor() default {};
+    String[] noRollbackForClassName() default {};
+}
+```
+
+### 주요 속성
+
+> **isolation**: 트랜잭션의 격리 수준 지정
+> **propagation**: 트랜잭션 간의 전파 동작 방식 지정
+> **rollbackFor**: 특정 예외 발생 시 롤백
+> **noRollbackFor**: 특정 예외는 롤백하지 않음
+> **timeout**: 지정 시간 초과 시 롤백
+> **readOnly**: 읽기 전용 트랜잭션 여부
+
+---
+
+## 1. isolation (격리 수준)
+
+| 레벨                | 설명                                                  |
+| ----------------- | --------------------------------------------------- |
+| DEFAULT           | 기본값, DB 설정을 따름                                      |
+| READ\_UNCOMMITTED | 커밋되지 않은 데이터도 읽을 수 있음 (Dirty Read 가능)                |
+| READ\_COMMITTED   | 커밋된 데이터만 읽을 수 있음 (Dirty Read 방지)                    |
+| REPEATABLE\_READ  | 동일 트랜잭션 내 반복 조회 시 같은 결과 보장 (Non-repeatable Read 방지) |
+| SERIALIZABLE      | 가장 엄격한 수준, 완전한 격리 제공 (모든 문제 방지)                     |
+
+### 격리 수준에 따른 문제
+
+| Isolation Level  | Dirty Read | Non-Repeatable Read | Phantom Read |
+| ---------------- | ---------- | ------------------- | ------------ |
+| Read Uncommitted | O          | O                   | O            |
+| Read Committed   | -          | O                   | O            |
+| Repeatable Read  | -          | -                   | O            |
+| Serializable     | -          | -                   | -            |
+
+---
+
+## 2. propagation (전파 속성)
+
+```java
+@Transactional(propagation = Propagation.REQUIRED)
+public void addUser(UserDTO dto) {
+    // 로직 구현
+}
+```
+
+| 옵션             | 설명                             |
+| -------------- | ------------------------------ |
+| REQUIRED       | 기본값. 기존 트랜잭션 있으면 참여, 없으면 새로 생성 |
+| REQUIRES\_NEW  | 항상 새로운 트랜잭션 생성, 기존 트랜잭션 일시 중단  |
+| SUPPORTS       | 트랜잭션이 있으면 참여, 없으면 트랜잭션 없이 실행   |
+| NOT\_SUPPORTED | 트랜잭션이 있으면 중단 후 트랜잭션 없이 실행      |
+| MANDATORY      | 반드시 기존 트랜잭션 존재해야 실행, 없으면 예외 발생 |
+| NEVER          | 트랜잭션 존재 시 예외 발생, 없을 때만 실행      |
+| NESTED         | 중첩 트랜잭션 실행, 없으면 REQUIRED처럼 동작  |
+
+---
+
+## 3. noRollbackFor
+
+특정 예외 발생 시 롤백하지 않음
+
+```java
+@Transactional(noRollbackFor = Exception.class)
+public void addUser(UserDTO dto) {
+    // 로직 구현
+}
+```
+
+## 4. rollbackFor
+
+특정 예외 발생 시 강제로 롤백
+
+```java
+@Transactional(rollbackFor = Exception.class)
+public void addUser(UserDTO dto) {
+    // 로직 구현
+}
+```
+
+> 기본적으로 `@Transactional`은 UncheckedException과 Error에만 롤백합니다. CheckedException에 대해서도 롤백하고 싶다면 `rollbackFor = Exception.class`를 설정해야 합니다.
+
+---
+
+## 5. timeout
+
+트랜잭션 제한 시간 설정. 지정 시간 내에 작업이 완료되지 않으면 롤백됩니다. 기본값은 -1 (제한 없음)
+
+```java
+@Transactional(timeout = 10)
+public void addUser(UserDTO dto) {
+    // 로직 구현
+}
+```
+
+---
+
+## 6. readOnly
+
+읽기 전용 트랜잭션 지정. 쓰기 작업 시 예외 발생
+
+```java
+@Transactional(readOnly = true)
+public void getUser() {
+    // 조회만 수행
+}
+```
+
+> `readOnly`는 JPA에서 쓰기 작업을 막지는 않지만, 일부 DB 드라이버에서는 힌트로 활용되어 성능 최적화에 도움을 줍니다.
+
+---
+
+## 마무리
+
+이번 글에서는 `@Transactional`에 대한 기본 정의와 주요 옵션들에 대해 알아보았습니다.
+앞으로 이어지는 포스트에서는 트랜잭션의 격리 수준, 비관적 락 vs 낙관적 락 등 더 심화된 내용을 다룰 예정입니다.
+
+---
+
+## 참고 자료
+
+* [tecoble - Transactional 설명](https://tecoble.techcourse.co.kr/post/2021-05-25-transactional/)
+* [정인철님 GitBook](https://incheol-jung.gitbook.io/docs/q-and-a/spring/transactional)

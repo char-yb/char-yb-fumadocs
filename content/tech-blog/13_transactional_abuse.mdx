@@ -1,0 +1,141 @@
+---
+title: "Transactional의 남용성"
+description: "Transactional을 남용하는 경우, 어떻게 해결해볼 수 있는 지에 대해 작성했습니다."
+---
+
+## 트랜잭션 남용성
+
+다음과 같은 코드가 있을 때,
+
+```java
+// 과연 이것이 적절한 트랜잭션인가?
+@Transactional 
+public void processPost(Long userId, String title, String content, MultipartFile image) {
+    // 유저 조회 - select
+    User user = userRepository.getById(userId);
+
+    // 게시글 생성 - insert
+    Post post = new Post(title, content);
+    postRepository.save(post);ㄴ
+
+    // 게시글 이미지 업로드
+    s3Uploader.upload(image);
+
+    // 해당 유저 구독자들에게 푸시 알람 전송
+    notifyService.notify(userId, postId, reportCount);
+}
+```
+
+다음과 같은 고민이 생길 수 있습니다.
+
+* 게시글 이미지가 100MB라면?
+
+  * 업로드 실패 시 post 생성도 롤백
+  * 트랜잭션 내에서 오랜 시간 블로킹됨
+* 푸시 서버 장애 시?
+
+  * 장애 발생 시 이전 작업도 모두 롤백
+  * 응답 지연으로 커넥션 유지 비용 증가
+
+따라서 외부 시스템과의 연동(s3Uploader, notifyService)은 트랜잭션 외부에서 처리하는 것이 좋습니다.
+
+<div align="center">
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/daaecdd4-3f15-41a5-abb9-67c2808f6165/image.png" width="100%" />
+</div>
+
+외부 서버에서 정상적인 응답을 받을 때까지 트랜잭션은 대기 상태에 머물게 됩니다.
+짧은 시간 내 수백 건의 게시글 작성 요청이 들어온다면, 커넥션 풀이 고갈되어 전체 시스템 장애로 이어질 수 있습니다.
+
+---
+
+### 트랜잭션 대상을 메서드로 분리하면 해결될까?
+
+```java
+public void processPost(Long userId, String content, MultipartFile image) {
+    s3Uploader.upload(image); // 업로드에 10초 걸린다면?
+
+    uploadPostTransaction(userId);
+
+    notifyService.notify(userId, postId, reportCount); // 푸시 서버 장애라면?
+}
+
+@Transactional
+private void uploadPostTransaction(Long userId) {
+    User user = userRepository.getById(userId);
+    Post post = new Post(user);
+    postRepository.save(post);
+}
+```
+
+결론은, **안 됩니다**.
+
+Spring AOP 기반 @Transactional은 **public 메서드에만 동작**하며,
+같은 클래스 내에서 메서드를 호출하면 프록시가 적용되지 않기 때문입니다.
+
+```yml
+logging.level.org.hibernate.engine.transaction.internal.TransactionImpl=debug
+```
+
+트랜잭션 로그를 통해 실제 적용 여부를 확인해보면 아래와 같은 상황이 나옵니다.
+
+```java
+public void processPost() {
+    System.out.println("트랜잭션 시작 전");
+    uploadPostTransaction();
+    System.out.println("트랜잭션 종료 후");
+}
+
+@Transactional
+public void uploadPostTransaction() {
+    System.out.println("트랜잭션 로직 시작");
+    System.out.println("트랜잭션 로직 종료");
+}
+```
+
+<div align="center">
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/1afaa815-72c7-4b74-ac1a-207c594f02b4/image.png" width="100%" />
+</div>
+
+Spring 프록시 메커니즘에서는 자기 자신 내 메서드 호출은 프록시를 거치지 않아 트랜잭션이 적용되지 않습니다.
+
+<div align="center">
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/fff21b3c-b105-4c62-a023-71604dbcc9f5/image.png" width="100%" />
+</div>
+
+---
+
+## 별도의 Bean 객체로 분리하면?
+
+정답입니다.
+별도의 컴포넌트 클래스로 분리하여 트랜잭션을 분리하면 프록시 객체가 제대로 적용됩니다.
+
+```java
+public void processPost(Long userId, String content, MultipartFile image) {
+    s3Uploader.upload(image);
+    postCommand.postCreateCommand(userId, content);
+    notifyService.notify(userId, postId, reportCount);
+}
+```
+
+```java
+@Component
+class PostCommand {
+
+    @Transactional
+    public void postCreateCommand(Long userId, String content) {
+        User user = userRepository.getById(userId);
+        Post post = new Post(user, content);
+        postRepository.save(post);
+    }
+}
+```
+
+추가로, 필요하다면 `@Async`를 활용해 비동기 처리도 고려할 수 있습니다. 하지만 트랜잭션 내에서 동기 처리가 필요하거나 결과 보장이 필요하다면 반드시 주의가 필요합니다.
+
+@TransactionTemplate을 사용하는 방법도 있지만, 복잡성과 유지보수성 측면에서 선택적으로 사용해야 합니다.
+
+---
+++ 2025.05.22) <br />
+Component를 활용해서 트랜잭션의 범위를 작은 단위로 나누는 방법도 있습니다.
+그것에 대한 Handling은 요구사항에 따라 다르기 때문에, 상황에 맞게 적용하면 좋을 것 같습니다.
+또한 롤백 정책도 상황에 맞게 설정해야 한다 생각해요.

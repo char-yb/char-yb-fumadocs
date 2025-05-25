@@ -1,0 +1,126 @@
+---
+
+title: "테스트 코드 내에 TRUNCATE 활용"
+description: "테스트 코드에서 트랜잭션 격리를 위해 TRUNCATE를 활용해 DB를 초기화하는 방법을 작성해보았습니다."
+---
+
+## 문제 상황
+
+오랜만에 테스트 코드를 작성하면서 DB에 쓰기 작업을 수행했는데, 이전 테스트에서 작성한 데이터가 공유되는 문제가 발생했습니다. 예를 들어, 미션을 생성하는 테스트 이후에 리스트를 조회하는 테스트에서 생성된 미션이 그대로 조회되었고, Auto Increment 값도 계속 증가하고 있었습니다. 이는 테스트 후 데이터가 롤백되지 않는 현상 때문이었습니다.
+
+JPA를 사용하는 상황에서 `@Transactional`을 통해 테스트마다 롤백이 되기를 기대했지만, 실제로는 그렇지 않았습니다.
+
+```java
+@WebMvcTest(controllers = MissionController.class)
+@AutoConfigureMockMvc(addFilters = false)
+@MockBean(JpaMetamodelMappingContext.class)
+@ActiveProfiles("test")
+class MissionControllerTest {
+}
+```
+
+하지만 여전히 영속성 컨텍스트에 데이터가 남아 있었고, 모든 테스트마다 `entityManager.flush()` 혹은 `clear()`를 사용하는 것도 비효율적이었습니다.
+
+<div align="center">
+  <img src="https://velog.velcdn.com/images/uiurihappy/post/2b25eead-71ff-42ef-b28b-dd47ff5dbcca/image.png" width="100%" />
+  뭔가 잘못됐음을 느낀 나...
+</div>
+
+### 문제 정리
+
+End-to-End 테스트 환경에서 트랜잭션 격리가 안 되는 이유:
+
+1. 테스트 메서드가 스레드 A에서 실행됩니다.
+2. 컨트롤러의 쓰기 작업은 스레드 B에서 실행됩니다.
+3. 트랜잭션 롤백은 A의 범위에서만 발생하며, B의 작업에는 적용되지 않습니다.
+
+결국 A에서 테스트가 끝나도 B에서 작성된 데이터는 그대로 남아 DB를 공유하게 되고, Auto Increment도 계속 증가합니다. 이로 인해 `@Transactional`만으로는 충분하지 않다는 것을 깨달았습니다.
+
+## 💡 해결책 고민
+
+많은 레퍼런스를 조사하며 두 가지 방법을 고민했습니다.
+
+---
+
+## 1️⃣ `@DirtiesContext` 사용하기
+
+### ✅ 장점
+
+* 테스트 간 컨텍스트 격리가 명확하게 이루어집니다.
+
+### ❌ 단점
+
+* 테스트 실행 시 Application Context를 매번 새로 로드하므로, 실행 시간이 크게 증가합니다.
+* 컨텍스트 캐시를 활용하지 못하므로 성능에 악영향을 미칩니다.
+
+초기에는 공통 설정을 추상 클래스에 모아 테스트 클래스들이 상속받게 하여 컨텍스트를 공유했습니다. 그러나 결국 DB 초기화 작업이 필요해졌습니다.
+
+---
+
+## 2️⃣ TRUNCATE 활용 (채택)
+
+테스트 시 리스트의 ID 값을 검증하려면 DB의 Auto Increment 값이 초기화되어야 합니다. `TRUNCATE`를 사용하면 ID 값도 초기화되므로 이 방법을 선택하게 되었습니다.
+
+### ✅ 코드 예시
+
+```java
+@Component
+public class DatabaseCleaner implements InitializingBean {
+
+    @PersistenceContext private EntityManager entityManager;
+    private List<String> tableNames;
+
+    @Override
+    public void afterPropertiesSet() {
+        entityManager.unwrap(Session.class).doWork(this::extractTableNames);
+    }
+
+    private void extractTableNames(Connection conn) {
+        tableNames =
+            entityManager.getMetamodel().getEntities().stream()
+                .map(e -> e.getName().replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase())
+                .collect(Collectors.toList());
+    }
+
+    public void execute() {
+        entityManager.unwrap(Session.class).doWork(this::cleanUpDatabase);
+    }
+
+    private void cleanUpDatabase(Connection conn) throws SQLException {
+        Statement statement = conn.createStatement();
+        statement.executeUpdate("SET REFERENTIAL_INTEGRITY FALSE");
+
+        for (String tableName : tableNames) {
+            statement.executeUpdate("TRUNCATE TABLE " + tableName);
+            statement.executeUpdate("ALTER TABLE " + tableName + " ALTER COLUMN " + tableName + "_id RESTART WITH 1");
+        }
+
+        statement.executeUpdate("SET REFERENTIAL_INTEGRITY TRUE");
+    }
+}
+```
+
+### 🔍 사용법
+
+```java
+@Autowired private DatabaseCleaner databaseCleaner;
+
+@BeforeEach
+void setUp() {
+    databaseCleaner.execute();
+}
+```
+
+`@BeforeEach`를 통해 각 테스트 실행 전 DB를 초기화합니다. `DELETE` 쿼리 대신 `TRUNCATE`를 사용하여 훨씬 빠르게 초기화됩니다.
+
+---
+
+## ✅ 결과
+
+* `@DirtiesContext`를 제거하여 컨텍스트 재로딩 시간을 줄였습니다.
+* 테스트 간 완전한 격리를 확보하였습니다.
+* 실제 테스트 실행 시간이 눈에 띄게 감소했습니다.
+
+인수 테스트에서도 사용 가능한 방식이며, 유지 보수와 실행 속도 측면에서 더 안정적입니다.
+
+👉 관련 PR 링크: [#84 - DatabaseCleaner 도입](https://github.com/depromeet/10mm-server/pull/84)
