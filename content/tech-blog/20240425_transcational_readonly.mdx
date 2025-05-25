@@ -1,0 +1,110 @@
+---
+title: "@Transactional(readOnly = true)는 왜 붙여야 할까??"
+description: "Spring에서 @Transactional(readOnly = true)의 의미와 이점을 알아보고, 왜 조회용 메서드에 붙여야 하는지에 대해 작성했습니다."
+---
+
+항상 서비스 레이어에서 클래스 또는 메서드에 읽기 전용에 대한 건은 Spring의 AOP를 통해 @Transactional(readOnly = true)을 사용하는데 왜 붙여야 할까??라는 고민이 들었다. 단순히 "조회 API를 사용하니까 성능상의 이점으로 readOnly=true를 사용해라."가 관례적으로 붙으니 이번 기회에 알아보려 한다. 모든 Transactional 어노테이션에 readOnly true가 정답이 아니고, 붙이는 것에 대해 알아보는 것이다.
+
+# readOnly = true 왜?
+
+**@Transactional(readOnly = true)**
+Spring에서 @Transactional 어노테이션을 사용할 수 있는데 트랜잭션을 readOnly = true로 설정해 주면 읽기 전용 모드로 변경할 수 있다.
+
+**단 주의사항 한가지로 말하자면**, @Transactional(readOnly = true)은 DB에서 데이터를 읽기만 하는 서비스 메서드에 적용을 해야 한다. readOnly에서도 알 수 있듯이 읽기 전용으로 변경하는 것이기 때문에 데이터를 수정, 삭제, 생성하는 서비스에 적용하면 안된다. 우선 읽기 전용 모드로 했을 때의 이점을 알아보면
+
+---
+## 데이터 일관성
+일반적으로 트랜잭션을 사용해서 DB에 데이터의 일관성과 무결성을 보장하기위해 사용하는데 트랜잭션을 읽기 전용으로 설정하면 실수로 데이터를 수정해서 일관성을 위반할 가능성이 낮아진다. 조회하는 메서드에서도 일관성을 위반하게 될 우려가 있기에 항상 주의를 해야 한다.
+
+---
+## 가독성 향상
+코드를 작성하는 개발자는 @Transactional(readOnly=true)이 설정된 메서드가 DB에서 데이터를 읽기만 한다는 것을 명확하게 확인할 수 있다. 이로 인해 코드의 가독성이 향상이 된다.
+
+아래 두 예시를 들어보자.
+어떤 메서드가 더 직관적으로 '나 조회용 메서드야'임을 보여주고 있는가?
+
+```java
+// 예시를 위해 간단하게 작성했다. 실제 구현 시에는 DTO로 Entity를 변환하는 것이 조타
+// 1
+@Transactional
+public Member getMember(Long memberId) {
+    return memberRepository.findById(memberId)
+    	.orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
+}
+
+// 2
+@Transactional(readOnly = true)
+public Member getMember(Long memberId) {
+    return memberRepository.findById(memberId)
+	    .orElseThrow(() -> new CustomException(ErrorCode.MEMBER_NOT_FOUND));
+}
+```
+getMember라는 메서드 명에서 이미 조회인걸 알지만 get 이전에 선언한 Transactional 어노테이션을 먼저 바라보면 readOnly 옵션 여부에 대한 것을 보면 직관적으로 조회용 인지를 알 수 있어서 가독성 측면에서 약간의 이점을 가질 수 있다.
+
+
+---
+## 성능 최적화
+트랜잭션을 읽기 전용으로 설정하면 해당 메서드가 데이터를 읽기만 한다는 것을 DB에 알려줌으로써 쿼리 및 캐싱을 최적화할 수 있다.
+
+약간 추상화된 문장인거 같은데?🤔
+좀 더 알아보면 JPA의 영속성 컨텍스트에서 수행되는 **변경감지**와 관련이 있다.
+읽기 전용으로 설정하며 데이터 변경이 일어나지 않기 때문에 **변경감지**를 위한 스냅샷을 저장하는 동작 또한 하지 않아 성능이 향상되는 것을 기대할 수 있다.
+
+>
+영속성 컨텍스트는 Entity 조회 시 초기 상태에 대한 Snapshot을 저장한다.
+트랜잭션이 Commit 될 때, 초기 상태의 정보를 가지는 Snapshot과 Entity의 상태를 비교하여 변경된 내용에 대해 update query를 생성해 쓰기 지연 저장소에 저장한다.
+그 후, 일괄적으로 쓰기 지연 저장소에 저장되어 있는 SQL query를 flush 하고 데이터베이스의 트랜잭션을 Commit 함으로써 우리가 update와 같은 메서드를 사용하지 않고도 Entity의 수정이 이루어진다. 이를 변경 감지(Dirty Checking) 라고 한다.
+
+이 때, readOnly = true를 설정하게 되면 스프링 프레임워크는 JPA의 세션 플러시 모드를 MANUAL로 설정한다.
+
+> MANUAL 모드는 트랜잭션 내에서 사용자가 수동으로 flush를 호출하지 않으면 flush가 자동으로 수행되지 않는 모드이다.
+
+즉, 트랜잭션 내에서 강제로 flush()를 호출하지 않는 한, 수정 내역에 대해 DB에 적용되지 않는다.
+
+이로 인해 트랜잭션 Commit 시 영속성 컨텍스트가 자동으로 flush 되지 않으므로 조회용으로 가져온 Entity의 예상치 못한 수정을 방지할 수 있다.
+
+또한, readOnly = true를 설정하게 되면 JPA는 해당 트랜잭션 내에서 조회하는 Entity는 조회용임을 인식하고 변경 감지를 위한 Snapshot을 따로 보관하지 않으므로 메모리가 절약되는 성능상 이점 역시 존재한다.
+
+---
+## Replication 부하 분산
+Spring에서 @Transactional(readOnly = true)을 설정하면 데이터베이스의 Replication 구조를 활용하여 읽기 작업을 분산할 수 있다. Replication 구조는 Master-Slave 구조로, Master DB에서 쓰기 작업을 수행하고 Slave DB에서 읽기 작업을 수행함으로써 트래픽을 분산할 수 있다.
+
+### Replication에 대해서
+서비스 규모에 따라 데이터베이스를 분리하여 Master-Slave 구조를 가진 Replication을 활용하곤 한다.
+사이드 프로젝트 같은 경우에는 불필요한 작업일 수도 있고, 규모가 커지면 하는 것이 좋다고 생각하는데 미리하는 것에 대해서는 철저히 반대이다.
+Replication 실제 운용되는 서비스에서는 데이터베이스의 장애를 빠르게 복구하고, 트래픽을 분산하기 위해 실시간 복제본 데이터베이스를 운용하는 방식을 사용한다.
+<img src="https://velog.velcdn.com/images/uiurihappy/post/ea9bd91e-f2fc-4222-9b5d-0fda5099a01d/image.png" alt="image" width="600px" />
+
+Replication은 Master-Slave 구조로 복제본 DB를 함께 운용함으로써, Master DB의 장애 발생 시 Slave DB를 Master DB로 승격시켜 장애를 빠르게 복구할 수 있으며, 조회 작업은 Slave DB에서 수행하고 수정 작업은 Master DB에서 수행함으로써 트래픽을 분산할 수 있다는 장점이 있다.
+
+---
+
+위와 같은 데이터베이스 구조를 가져갈 때, readOnly = true가 설정되어있는 메서드의 경우 Slave DB에서 데이터를 가져오도록 동작한다. 이를 통해 Replication의 목적에 맞게 트래픽 분산을 온전하게 적용할 수 있다는 추가적인 이점이 존재한다.
+
+그러면 조회용 메서드에 그냥 @Transactional 어노테이션을 안 붙이면 되지 않을까라는 의문이 생길수도 있다. 조회용 메서드에 대해 @Transactional 어노테이션 유무의 차이는 OSIV(Open Session In View)가 꺼져있을 때 알 수 있다.
+
+OSIV는 영속성 컨텍스트를 View Layer까지 유지하는 속성으로, 클라이언트의 요청 시점부터 영속성 컨텍스트를 생성하여 `Filter / Interceptor` - `Controller` 에서 부터 영속성 컨텍스트가 생성되어 유지됨으로써 View Layer에서도 Entity의 Lazy Loading이 가능하도록 한다.
+
+기본적으로 별도의 설정을 하지 않는다면 OSIV는 true로 설정되어 있어 @Transactional 어노테이션 유무의 차이를 알 수 없다.
+
+실제로, OSIV를 켠 상태에서 @Transactional 어노테이션의 유무와 상관없이 다음 Lazy Loading을 수행하는 코드의 동작은 Exception 없이 정상적으로 동작한다.
+
+```java
+// @Transactional(readOnly = true)
+public Member getMember(Long memberId) {
+        Member member = memberRepository.getCurrentMemberById(memberId).get();
+        System.out.println(member.getTeam().getName()); // Lazy Loading 발생
+        return member;
+}
+```
+
+
+하지만, OSIV를 false로 설정한다면 영속성 컨텍스트는 트랜잭션 범위를 벗어나는 순간 Entity는 영속성 컨텍스트의 관리를 받지 않는 준영속 상태가 되어버린다. 영속성 컨텍스트의 관리를 받지 않는 **준영속 상태가 된다는 말은 곧 Lazy Loading의 동작이 불가능하다**는 의미이다.
+
+OSIV를 false로 설정(spring.jpa.open-in-view=false)하고 @Transactional 어노테이션을 제거하였을 때, LazyInitializationException이 발생함을 확인할 수 있다.
+
+OSIV가 꺼져있는 상태로, @Transactional 어노테이션이 붙어있지 않은 상태에서 member를 조회하는 순간 트랜잭션 범위에 존재하지 않으므로 즉시 준영속 상태에 들어가 Lazy Loading의 동작이 불가능하게 된다. 그렇듯, OSIV가 꺼져있는 상태에서는 @Transactional 어노테이션이 없을 때에 Lazy Loading의 동작을 수행할 수 없다는 문제점이 있으므로 조회용 메서드에 대해서도 @Transactional 어노테이션을 붙여주어야 하는 것이다.
+
+OSIV는 기본적으로 true이지만, **OSIV 전략은 클라이언트 요청 시점부터 API 응답이 끝날 때까지 영속성 컨텍스트와 데이터베이스 커넥션을 유지하므로 실시간 트래픽이 중요한 애플리케이션 서비스에서 커넥션 부족으로 이어질 수 있다는 큰 단점이 있다.**
+
+따라서, lazy-loading, replication과 같이 트랜잭션 범위 내에서 수행해야 되는 동작이 있는 경우에 대해서 적절히 @Transactional 어노테이션을 활용하는 것이 좋으며, 무분별하게 @Transactional 어노테이션을 사용하는 것은 위에서 언급했듯이 스냅샷 유지, flush의 필요 등 관리적/메모리적 측면에서 오히려 좋지 않을 수 있고, 커넥션을 오래 가지고 있어 커넥션 부족 등의 문제가 발생할 수 있다.

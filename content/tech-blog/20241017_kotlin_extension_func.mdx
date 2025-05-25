@@ -1,0 +1,256 @@
+---
+title: "Kotlin 확장 함수 톺아보기"
+description: "Kotlin 확장 함수에 대해 알아보고, 장단점 및 사용 예시를 알아보았습니다."
+---
+<img src="https://velog.velcdn.com/images/uiurihappy/post/0b921c6d-40ca-4d00-a2a2-9fd8b928a283/image.png" width="100%" />
+
+## 확장 함수란?
+
+> 🥸 확장 함수를 알고 계신가요?
+
+> 😅 그..그게 뭐죠..?
+
+자 이제 알려드리겠습니다~
+Kotlin에서는 기존 클래스의 코드를 수정하지 않고 새로운 기능을 추가할 수 있는 확장 함수라는 개념이 있습니다.
+확장 함수는 특정 클래스에 대해 정의할 수 있으며, 마치 해당 클래스의 메서드인 것처럼 호출할 수 있습니다. 이로 인해 코드의 재사용성이 증가하고, 객체의 변형 없이도 유연한 코드 작성이 가능하다고 하는데... 뭐 너무 추상적인 표현이죠. 이에 대해 차근차근 알아보도록 하겠습니다.
+
+---
+## 간단하게 확장 함수의 구조
+
+```kotlin 
+fun String.capitalizeFirstLetter(): String {
+    return this.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+}
+
+fun main() {
+    val text = "hello world"
+    println(text.capitalizeFirstLetter())  // 출력: Hello world
+}
+```
+**1. 수신 객체 타입 (Receiver Type)**
+확장 함수는 어떤 클래스에 새로운 함수를 추가하는 것처럼 작동합니다. 여기서 String은 수신 객체 타입으로, String 클래스에 대해 확장 함수가 정의된다는 의미입니다.
+
+**2. 수신 객체 (Receiver Object)**
+확장 함수 내에서는 this 키워드가 수신 객체를 참조합니다. 위 코드에서 this는 확장 함수가 호출된 String 객체, 즉 text를 가리킵니다. this.replaceFirstChar 구문에서 this는 text와 같은 String 인스턴스를 나타냅니다.
+
+**3. this 키워드 사용**
+확장 함수 내에서 this를 생략할 수도 있습니다. 예를 들어 this.replaceFirstChar(...)는 replaceFirstChar(...)와 같이 this 없이도 작동합니다. this는 수신 객체를 참조하기 때문에, 확장 함수 내부에서 String 클래스의 함수와 속성을 직접 호출할 수 있게 합니다.
+
+요약.
+>• 수신 객체 타입 (Receiver Type): 확장 함수가 적용되는 클래스 (String).
+• 수신 객체 (Receiver Object): 확장 함수 호출 시 실제로 사용되는 객체 (text).
+• this 키워드: 함수 내에서 수신 객체를 참조하여 객체의 속성 및 메서드에 접근하는 데 사용됩니다.
+
+---
+## 간단하게 장단점
+**장점**
+
+	1. 기존 코드 수정 없이 기능 추가
+    확장 함수는 기존 클래스를 변경할 필요가 없으므로, 외부 라이브러리나 기본 클래스에 새로운 기능을 추가할 때 유용합니다.
+    
+	2. 더 간결한 코드
+    불필요한 헬퍼 클래스를 만들지 않고도 필요한 기능을 클래스에 쉽게 추가할 수 있습니다.
+    
+	3. 높은 가독성
+    기존 메서드처럼 사용할 수 있어 가독성이 높아지고, 코드가 명확해집니다.
+
+**단점**
+
+	1. 우선순위 문제
+    동일한 이름의 메서드가 있을 경우, 확장 함수보다 클래스에 정의된 메서드가 우선적으로 호출됩니다.
+    
+	2. 캡슐화 부족
+    클래스 내부에 직접 접근할 수 없기 때문에, private 멤버나 메서드에는 접근할 수 없습니다.
+    
+	3. 명시적 사용 필요
+    확장 함수는 클래스에 원래 포함된 것이 아니므로, 함수 사용을 의도적으로 명시해야 합니다.
+
+
+이러한 장단점을 가지고 있는 확장 함수에서 필요한 영역이 존재할 시 사용하면 되겠는데요.
+그런데, 장점은 너무나 명확하게 이미 좋다는 걸 보여주고 개발자라면 예외 사항을 보완하기 위해 단점 및 문제점에 대해 유심히 봐야한다고 생각합니다. 작성해본 단점들은 뭔가 직접 "내가 짜보고 실행을 해봐야지 그전엔 모르겠다." 라는 생각이 들었습니다.
+
+그.래.서 지금 단점들에 대한 상황을 하나하나 코드와 함께 보겠습니다.
+
+**1. 우선순위 문제 **
+확장 함수는 클래스에 정의된 메서드보다 우선순위가 낮습니다. 즉, 클래스에 이미 정의된 메서드와 동일한 이름의 확장 함수를 정의하면, 확장 함수가 아닌 클래스의 기존 메서드가 호출됩니다. 이로 인해 예상치 못한 동작이 발생할 수 있습니다.
+
+```kotlin
+class Member {
+    fun getName(): String {
+        return "차윤범"
+    }
+}
+
+fun Member.getName(): String {
+    return "Charlie"
+}
+
+fun main() {
+    val member = Member()
+    println(member.getName())  // 출력: 차윤범
+}
+```
+위 예제에서 Member 클래스에 이미 getName() 메서드가 정의되어 있기 때문에, 동일한 이름의 확장 함수가 정의되어 있어도 클래스 내부 메서드가 호출됩니다. getter/setter와 같은 메서드 네이밍을 사용해서 확장 함수가 호출되기를 기대했지만 클래스 메서드가 호출되어, 예상과 다른 결과를 초래할 수 있습니다.
+
+네이밍을 명확하고 상세히 작성하는 것이 중요하며, 클래스 내부 메서드 호출되지 않도록 주의하며 작성하는 것이 좋습니다.
+
+
+**2. 캡슐화 부족**
+확장 함수는 클래스의 private 멤버나 메서드에 접근할 수 없습니다. 확장 함수는 클래스 외부에서 정의되는 함수이므로, 클래스 내부의 세부 구현 사항에 접근할 수 있는 권한이 없습니다.
+
+```kotlin
+class Person(private val name: String) {
+    private fun getDetails(): String {
+        return "이름: $name"
+    }
+}
+
+fun Person.showDetails(): String {
+    // private 멤버인 name과 getDetails()에 접근할 수 없음
+    return "접근할 수 없습니다"
+}
+
+fun main() {
+    val person = Person("차윤범")
+    println(person.showDetails())  // 출력: 접근할 수 없습니다
+}
+```
+위 예제에서는 Person 클래스 내부의 name 멤버와 getDetails() 메서드가 모두 private이기 때문에, showDetails() 확장 함수에서는 이를 직접 사용할 수 없습니다. 이처럼 클래스 내부 정보에 접근하지 못해 의도한 기능을 확장 함수로 구현하기 어려울 수 있습니다.
+
+
+**3. 명시적 사용 필요**
+확장 함수는 클래스 내부에 원래 포함된 메서드가 아니므로, 함수 사용을 의도적으로 명시해야 합니다. 특히 라이브러리나 다양한 클래스에 확장 함수를 적용할 때, 그 확장 함수가 있는지 없는지 알기 어렵습니다. 이런 특성은 협업 환경에서 코드 이해와 유지보수에 어려움을 줄 수 있습니다.
+
+```kotlin
+import java.math.BigDecimal
+
+data class Product(val price: BigDecimal)
+
+fun List<Product>.calculateTotalPrice(): BigDecimal {
+    // 총합
+    return this.fold(BigDecimal.ZERO) { total, product -> total + product.price }
+}
+
+fun main() {
+    val products = listOf(
+        Product(BigDecimal("100.0")),
+        Product(BigDecimal("200.0"))
+    )
+    println(products.calculateTotalPrice())  // 출력: 300.0
+}
+```
+위 예제의 calculateTotalPrice() 함수는 `List<Product>`에 대해 동작하지만, List 자체에 내장된 메서드가 아니므로 함수가 따로 존재하는지 협업 시 알기 어렵습니다. 만약 팀원이 해당 함수의 존재를 모르고 반복되는 로직을 새로 작성한다면 중복된 코드가 발생할 수 있습니다.
+
+이처럼 확장 함수의 우선순위, 접근 제한, 그리고 명시적 사용의 필요성은 코드 작성 시 불편함이나 혼란을 초래할 수 있습니다. 이 단점들을 염두에 두고 적절히 확장 함수를 설계하는 것이 중요합니다.
+
+그래서 저는 설계를 한다면 멀티모듈같은 경우 common 모듈에 utils 패키지를 정의할 수도 있고, 그 외 아키텍처와 설계에 해치지 않는 방법을 팀원들과 조율하여 선택할 듯합니다.
+
+
+---
+
+
+## 활용 예시 
+
+위에서 단점들을 통해 여러 활용도 해보고, 실 사례로 사용하는 코드 중 일부를 발췌하거나 다른 비즈니스 상황에서 생길수도 있지 않을까하는 코드를 간단하게 작성해보았습니다.
+
+#### 1. 이메일 중복제거
+
+```kotlin 
+import java.time.LocalDate
+
+data class Member(val name: String, val email: String, val phone: String?, val registrationDate: LocalDate)
+
+fun List<Member>.removeDuplicateEmails(): List<Member> {
+    return this
+        .filter { it.phone != null } // 전화번호가 없는 사용자를 제외
+        .groupBy { it.email }         // 이메일로 그룹화
+        .mapValues { (_, members) ->
+            members.maxByOrNull { it.registrationDate } // 가장 최근 등록 날짜의 사용자 선택
+        }
+        .values
+        .filterNotNull() // null 값이 포함되지 않도록 필터링
+        .toList()
+}
+
+fun main() {
+    val members = listOf(
+        Member("Alice", "alice@example.com", "123-456-7890", LocalDate.of(2023, 5, 1)),
+        Member("Bob", "bob@example.com", "234-567-8901", LocalDate.of(2023, 4, 20)),
+        Member("Alice2", "alice@example.com", null, LocalDate.of(2023, 6, 15)), // 전화번호가 없어 제외
+        Member("Alice", "alice@example.com", "123-456-7890", LocalDate.of(2023, 6, 10))
+    )
+
+    val uniqueMembers = members.removeDuplicateEmails()
+    println(uniqueMembers)
+}
+```
+
+위 코드에 대한 특징을 정리해보았는데요.
+> 1.	전화번호 필터링: filter를 사용해 전화번호가 없는 사용자를 먼저 제외합니다.
+2.	이메일 기준 그룹화: groupBy를 사용해 이메일을 기준으로 그룹화하여 중복된 이메일을 가진 사용자들을 묶습니다.
+3.	가장 최신 사용자 선택: mapValues와 maxByOrNull을 사용하여 각 그룹에서 가장 최신 등록 날짜를 가진 사용자만 남깁니다.
+4.	Null 값 제거: 모든 사용자 데이터가 정상적으로 필터링되었는지 filterNotNull로 최종 검증합니다.
+
+이 확장 함수는 단순히 중복을 제거하는 것뿐 아니라, 비즈니스 로직(가장 최신의 사용자 남기기)과 예외 조건(전화번호가 없는 사용자 제외)을 포함하여 중복을 제거할 수 있는 유연한 방법으로 작성해 활용할 수도 있습니다. 또한 확장 함수는 독립적인 함수로 관리되므로, 클래스의 다른 기능과 분리하여 테스트하거나 변경할 수 있습니다. 복잡한 로직을 포함한 메서드를 외부 확장 함수로 작성해 유지보수 시 코드의 흐름을 단순화할 수 있습니다.
+
+> 여기서, 한번은 의문이 들 수 있는 것이 확장 함수가 아닌 private fun 으로 내부 메서드 선언해도 되는 거 아닌가요??
+
+물론, 중복 제거와 같은 로직을 클래스의 private 메서드로 정의할 수도 있습니다. 그러나 이 방식은 클래스의 기능을 지나치게 확장하여 비즈니스 로직과 데이터 모델의 역할이 혼재될 가능성이 있습니다. 예를 들어, Member 클래스 내부에 아래와 같은 private 메서드를 정의할 수 있지만, 이 경우 클래스가 불필요하게 복잡해질 수 있습니다.
+
+```kotlin
+data class Member(val name: String, val email: String, val phone: String?, val registrationDate: LocalDate) {
+    
+    private fun List<Member>.filterAndRemoveDuplicates(): List<Member> {
+        return this
+            .filter { it.phone != null }
+            .groupBy { it.email }
+            .mapValues { (_, members) ->
+                members.maxByOrNull { it.registrationDate }
+            }
+            .values
+            .filterNotNull()
+            .toList()
+    }
+}
+```
+
+이처럼 내부 메서드로 구현했을 시,
+사용성의 제약이 생깁니다. 예를 들어, 다른 목록에서 중복 제거를 재사용할 때 이 메서드를 다른 클래스에서 호출할 수 없습니다. 불필요한 클래스 복잡도가 추가됩니다. 데이터 클래스로서의 역할이 부각되지 않고 불필요한 비즈니스 로직이 섞이게 됩니다.
+
+그렇다면 확장 함수는 기존 클래스를 수정하지 않고도 외부에서 기능을 추가할 수 있는 방식으로, 코드 재사용성과 가독성을 높이면서도 `특정 비즈니스 요구사항`에 맞춘 로직을 깔끔하게 적용할 수 있습니다. 반면, private 메서드는 클래스 내에서만 사용 가능한 제한이 있고, 클래스가 본래 수행할 역할에 비해 불필요한 복잡도가 더해질 수 있습니다.
+
+Kotlin 확장 함수는 이처럼 데이터 가공이나 비즈니스 로직의 재사용성에 초점을 맞추어 클래스 외부에서 간결하고 명확하게 관리할 수 있는 장점이 존재합니다!
+
+
+#### 2. 환율 변환
+
+환율 변환처럼 실생활에 자주 쓰이는 로직도 확장 함수로 간단하게 구현할 수 있습니다. 예를 들어, 원화를 달러로 변환하거나 달러를 원화로 변환하는 함수는 매우 자주 쓰일 수 있습니다.
+
+```kotlin
+const val USD_TO_KRW = 1300.0  // 1 USD = 1300 KRW
+
+fun Double.toUSD(): Double {
+    return this / USD_TO_KRW
+}
+
+fun Double.toKRW(): Double {
+    return this * USD_TO_KRW
+}
+
+fun main() {
+    val krw = 100000.0  // 10만 원
+    println(krw.toUSD())  // 출력: 약 76.92 달러
+
+    val usd = 100.0  // 100 달러
+    println(usd.toKRW())  // 출력: 130,000 원
+}
+```
+
+위에서는 환율에 대한 값 처리를 진행할 수도 있습니다.
+값 처리뿐만 아니라 https://open.er-api.com/v6/latest/USD 과 같은 환율 데이터 모델을 정의하고 변환에 따른 확장 함수 처리를 유연하게 할 수 있을거라 생각합니다.
+
+
+## 참고
+- https://todaycode.tistory.com/176
+- https://mashup-android.vercel.app/mashup-11th/Ahnseokjoo/baselambda/BaseLambda/
+- https://velog.io/@minju0426/Kotlin-%ED%99%95%EC%9E%A5%ED%95%A8%EC%88%98%EB%A5%BC-%ED%99%9C%EC%9A%A9%ED%95%98%EB%8A%94-%EB%B2%95how-to-use-Extension-Function
