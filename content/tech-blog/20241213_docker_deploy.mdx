@@ -1,0 +1,362 @@
+---
+title: "Docker 활용해 간단하게(?) 서버 배포"
+description: "Docker를 활용해 간단하게 서버를 배포하는 방법에 대해 알아봅니다."
+---
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/fc96610c-0637-495a-9aec-73449d184d7e/image.png" width="100%" />
+
+> ~~기존 medium에 작성되었던 글을 가져와 다듬어 다시 작성해봅니다.~~
+~~작성 기준은 8월 기준입니다.~~
+
+이전 디프만 15기에서 왈왈 서비스 배포 구성에 대해 간단하게 작성하고자 합니다.
+
+배포할 서비스 개발 환경
+- Spring boot 3.2.x
+- Java 17
+- Gradle
+
+### 서론
+우선 AWS 클라우드를 사용하게 되었는데요, 디프만 15기 후원사 중 NCP(Naver Cloud Platform)에서 크레딧을 제공받아 클라우드를 구성할 수 있겠지만, NCP의 어마무시한 가격 정책과 프로젝트 일정 산정, 팀원들의 NCP 러닝 커브를 고려하였을때 AWS를 선정하기로 하였습니다. 프리티어 플랜으로 `t2.micro - dev`, `t4g.small - production` EC2 인스턴스를 구성하기로 하였습니다.
+
+### t4g를 사용한 이유
+
+이전 10분만을 구성했듯이 현재 t4g가 무료 평가판으로 2024.12.31까지 월 최대 750시간 무료이기에 도입을 결정하였고, 아래 퍼포먼스를 확인해보면 CPU, 메모리, 대역폭 측면에서 프리티어 t2.micro에 비해 멋진 퍼포먼스를 보여주고 있습니다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/f0e7658b-ff4d-4680-9a98-06a7fbc1369c/image.png" width="100%" />
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/c4926b7c-cd13-49d9-9f9b-af4dc716f954/image.png" width="100%" />
+
+안내: https://aws.amazon.com/ko/ec2/instance-types/t4/
+
+
+
+### 시작은 EB(Elastic Beanstalk)
+사이드프로젝트이기에 새로운 기술 도입이나 개발에 대해 자유성이 있기에 해보고 싶은 아키텍처가 있는 지 내부에서 이야기를 해보고 AWS 서비스 중 EB(Elastic Beanstalk)를 선택하여 구성해보도록 하였습니다.
+플랫폼에 따른 아키텍처 구성과 내부 오토스케일링이 유연하여 시작은 EB로 선택하였습니다.
+
+#### 문제점
+
+nginx를 제외한 도메인 연결도 하루만에 배포는 성공적으로 손쉽게 하였다만, 내부에서 메모리가 지속적으로 누수가 발생되어 Degrade 혹은 Warning 상태로 서버 상태가 변경되고 인스턴스 메모리 증설 및 Swap 메모리 확보 조치를 통해 일시적으로 안정화는 되었습니다.
+
+그러나 매번 메모리에 대한 이슈로 모니터링 할 수는 없을 뿐더러 Unstable 한 상태에서 서버를 유지하며 많은 불안과 걱정을 하였고, 아직 릴리즈도 안된 애플리케이션에 오버 엔지니어링인가? 정말 우선적으로 EB를 사용하는 게 맞나 의심부터 하였습니다. 아직 EB에 대한 러닝커브가 부족한 가 싶기도 하고... 며칠 아티클을 읽고 설정이나 배포를 시도했지만 여전히 메모리 이슈가 발생되었습니다.
+
+#### 드리프트
+결국, 러닝커브가 그나마 짧고 Container를 띄워 서버를 손쉽게 구성할 수 있는 Docker compose와 DockerHub를 통한 배포 아키텍처로 전환을 결정하였습니다.
+DockerHub Token은 해당 이미지처럼 발급이 용이합니다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/69d8c773-3699-4b93-9c4f-10a6abeeef9b/image.png" width="100%" />
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/bfde1098-4253-4ac3-b27a-14d7fd7f348f/image.png" width="100%" />
+
+위 setting 페이지에서 DockerHub 토큰을 발급받을 수 있습니다.
+
+발급된 Token은 Github Actions에 secrets로 등록하여 워크플로에서 사용하도록 합니다.
+
+### 배포 구성 (Workflow)
+저희 왈왈 서버는 Spring boot, Java 17, Gradle로 되어있기에 그에 맞는 Workflow를 작성하였습니다!
+우선 Dev 환경의 Workflow입니다.
+
+```yml
+name: Develop Build & Deploy
+
+on:
+  push:
+    branches: [ "develop" ]
+
+env:
+  DOCKERHUB_IMAGE_NAME: walwal-server
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment: DEV
+    strategy:
+      matrix:
+        java-version: [ 17 ]
+        distribution: [ 'temurin' ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # JDK를 17 버전으로 세팅
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: ${{ matrix.java-version }}
+          distribution: ${{ matrix.distribution }}
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build with Gradle
+        id: gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          arguments: |
+            build
+            --scan
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/develop' }}
+
+      # Dockerhub 로그인
+      - name: Login to Dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Docker 메타데이터 추출
+      - name: Extract Docker metadata
+        id: metadata
+        uses: docker/metadata-action@v5.5.0
+        env:
+          DOCKERHUB_IMAGE_FULL_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKERHUB_IMAGE_NAME }}
+        with:
+          images: ${{ env.DOCKERHUB_IMAGE_FULL_NAME }}
+          tags: |
+            type=sha,prefix=
+
+      # Docker 이미지 빌드 및 도커허브로 푸시
+      - name: Docker Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+
+      # 서버로 docker-compose 파일 전송
+      - name: Copy docker-compose file to EC2
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avzr --delete
+          remote_host: ${{ secrets.EC2_HOST }}
+          remote_user: ${{ secrets.EC2_USERNAME }}
+          remote_key: ${{ secrets.EC2_PRIVATE_KEY }}
+          path: docker-compose.yaml
+          remote_path: /home/ec2-user/
+
+      - name: Copy default.conf to EC2
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avzr --delete
+          remote_host: ${{ secrets.EC2_HOST }}
+          remote_user: ${{ secrets.EC2_USERNAME }}
+          remote_key: ${{ secrets.EC2_PRIVATE_KEY }}
+          path: ./nginx
+          remote_path: /home/ec2-user/
+
+      # EC2로 배포
+      - name: Deploy to EC2 Server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE_FULL_URL: ${{ steps.metadata.outputs.tags }}
+          DOCKERHUB_IMAGE_NAME: ${{ env.DOCKERHUB_IMAGE_NAME }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_PRIVATE_KEY }}
+          envs: IMAGE_FULL_URL, DOCKERHUB_IMAGE_NAME # docker-compose.yml 에서 사용할 환경 변수
+          debug: true
+          script: |
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker compose up -d
+            docker exec -d nginx nginx -s reload
+            docker image prune -a -f
+
+      ## Slack
+      - name: Slack Alarm
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          author_name: GitHub-Actions CI/CD
+          fields: repo,message,commit,author,ref,job,took
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # required
+        if: always() # Pick up events even if the job fails or is canceled.
+```
+
+위 Workflow에 대해 순차적으로 설명을 드리고 prod와의 차이점에 대해 이야기를 해볼까합니다.
+저희 왈왈 서버는 PR 기반으로 작업 단위를 나눠 develop 브랜치에 merge 되면 자동으로 dev서버에 반영되도록 진행하였습니다.
+
+step 순서로 checkout -> java 17 버전 -> gradle 권한 부여 등등 기본적인 step를 진행하고, gradle-build 하는 데에 있어서 다들 cache를 사용할텐데 저희는 [gradle-build-action](https://github.com/gradle/gradle-build-action)의 v3 버전을 사용하여 보다 최적화된 빌드 캐싱에 대한 Actions를 도입하였습니다.
+
+이후 등록하였던 Docker Hub의 Token, Username을 사용하여 Docker hub에 로그인을 진행하여 Docker의 metatag를 추출해 Docker hub에 빌드와 푸시를 진행하였습니다.
+
+다음으로 저희 EC2 환경에 따른 host, username, private_key를 secrets에 등록하여 직접 EC2에 접근하였습니다. 접근한 이유는 EC2 내부에 Docker compose, DNS 프록시를 위한 nginx, 그 외 명령어 사용 위함으로 EC2 내부에서는 Docker compose 환경 구성도 사전에 마쳤습니다.
+
+다음으로 EC2에 배포를 진행하게 되었는데요, ssh-action을 통한 EC2 접속으로 script를 작성해 docker compose를 실행하여 애플리케이션 환경을 띄우도록 진행하였습니다.
+
+마지막으로 배포에 대한 알림은 Slack 채널에 전송하도록 Webhook 또한 secrets에 등록하여 완료 여부를 전송하도록 구성하였습니다. 이렇게 dev 환경에 대한 Workflow를 설명드렸는데요, 
+prod Workflow는 dev Workflow와의 Job이 많이 유사하여 차이점 위주로 이야기해보려 합니다.
+
+```yml
+name: Production Build & Deploy
+
+on:
+  push:
+    tags:
+      - v*.*.*
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DOCKERHUB_IMAGE_NAME: walwal-server
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment: PROD
+    strategy:
+      matrix:
+        java-version: [ 17 ]
+        distribution: [ 'temurin' ]
+    steps:
+      # 체크아웃
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Docker 이미지 태그 세팅
+      - name: Set up image-tag by GITHUB_SHA
+        id: image-tag
+        run: echo "value=$(cut -d'v' -f2 <<< ${GITHUB_REF#refs/*/})" >> $GITHUB_OUTPUT
+
+      ...
+
+      # Gradle 빌드
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/develop' }} # feature 브랜치는 캐시를 읽기 전용으로 설정
+          cache-encryption-key: ${{ secrets.GRADLE_CACHE_ENCRYPTION_KEY }}
+          add-job-summary-as-pr-comment: always
+          build-scan-publish: true
+          build-scan-terms-of-use-url: "https://gradle.com/help/legal-terms-of-use"
+          build-scan-terms-of-use-agree: "yes"
+
+      - name: Build with Gradle
+        id: gradle
+        run: ./gradlew build --configuration-cache
+
+      # Dockerhub 로그인
+      - name: Login to Dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Docker 메타데이터 추출
+      - name: Extract Docker metadata
+        id: metadata
+        uses: docker/metadata-action@v5.5.0
+        env:
+          DOCKERHUB_IMAGE_FULL_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKERHUB_IMAGE_NAME }}
+        with:
+          images: ${{ env.DOCKERHUB_IMAGE_FULL_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+          flavor: |
+            latest=false
+
+      # 멀티 아키텍처 지원을 위한 QEMU 설정
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 도커 확장 빌드를 위한 Buildx 설정
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 이미지 빌드 및 Dockerhub에 푸시
+      - name: Docker Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/walwal-server:${{ steps.image-tag.outputs.value }}
+
+      # AWS 로그인
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ap-northeast-2
+          output-config: true
+
+      # 복사 경로 환경변수 설정
+      - name: Set up S3 copy path
+        env:
+          S3_DEPLOY_BUCKET_NAME: ${{ secrets.S3_DEPLOY_BUCKET_NAME }}
+        run: echo "S3_COPY_PATH=$(echo s3://${S3_DEPLOY_BUCKET_NAME}/walwal-prod/docker-compose.yaml)" >> $GITHUB_ENV
+
+      # S3로 docker-compose 파일 전송
+      - name: Copy docker-compose file to S3
+        run: aws s3 cp docker-compose.yaml ${{ env.S3_COPY_PATH }}
+
+      - name: Deploy to EC2 Server
+        uses: appleboy/ssh-action@master
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          IMAGE_FULL_URL: ${{ steps.metadata.outputs.tags }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_PRIVATE_KEY }}
+          envs: IMAGE_FULL_URL # docker-compose.yaml 에서 사용할 환경 변수
+          script: |
+            aws s3 cp ${{ env.S3_COPY_PATH }} docker-compose.yaml
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker pull ${{ env.IMAGE_FULL_URL }}
+            docker compose up -d
+            docker image prune -a -f
+
+      ## Slack
+      - name: Slack Alarm
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          author_name: GitHub-Actions CI/CD
+          fields: repo,message,commit,author,ref,job,took
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # required
+        if: always() # Pick up events even if the job fails or is canceled.
+```
+
+prod는 v*.*.*으로 태그로 버저닝을 진행하였습니다.
+릴리즈에 대한 version 태깅이 유용하다고 생각하였고, prod는 보다 견고하게 되어야 한다고 생각했습니다. gradle을 build 하는 데에 있어서 구성 캐시를 base64 인코딩된 AES 키로 암호화하였습니다. 이 키는 이후 단계를 위해 'GRADLE_ENCRYPTION_KEY'로 내보내집니다. `openssl rand -base64 16`을 사용하여 적합한 키를 생성할 수 있습니다. 암호화 키가 제공되지 않으면 구성 캐시 데이터는 저장/복원되지 않습니다.
+
+Ref.
+- https://docs.gradle.org/8.6-rc-2/release-notes.html
+- https://github.com/gradle/gradle-build-action/blob/093dfe9d598ec5a42246855d09b49dc76803c005/action.yml#L36
+
+다음으로는 t4g.small 환경은 t2.micro와 달리 arm64 기반 아키텍처로 구성되어 있습니다.
+여기서 멀티 아키텍처를 지원하기 위해 `docker/setup-qemu-action@v3`, `docker/setup-buildx-action@v3` 두 가지 액션을 도입해 설정하도록 action에 추가하였습니다.
+
+이후 docker 이미지를 빌드&푸시하는 데에 있어서 platforms 옵션을 추가해 linux/arm64 아키텍처를 지원하도록 하였습니다.
+
+다음 저희 docker-compose 파일은 AWS S3 버킷에 복붙하여 저장하도록 하였으며, S3에 저장된 docker compose 파일을 사용하게 하였습니다.
+
+#### 왜 S3를 사용하게 되었는가??
+1. S3 경로 동적 설정
+S3_COPY_PATH라는 환경변수를 설정하여, 이후 단계에서 S3로 파일을 복사할 때 해당 경로를 참조할 수 있도록 만듭니다. 이 작업을 통해 코드에서 하드코딩된 경로 대신, 설정된 환경변수를 활용해 경로를 동적으로 관리할 수 있습니다.
+
+2. 유지보수성 향상
+S3 버킷 이름이 변경되거나, 배포 경로가 수정되어도 해당 경로를 한 곳에서만 수정하면 됩니다.
+secrets.S3_DEPLOY_BUCKET_NAME와 같이 보안 설정을 활용해 경로의 민감 정보를 숨기고, YAML 파일에 직접 값을 노출하지 않습니다.
+
+3. 환경변수 기반 유연성
+설정한 S3_COPY_PATH는 이후 단계(Copy docker-compose file to S3)와 연결됩니다. 이를 통해 경로가 필요할 때 환경변수를 활용해 변경 없이 여러 단계에서 재사용할 수 있습니다.
+
+마지막으로 최종적으로 배포 완료가 되었으면 Slack 알림을 전송하도록 구성하였습니다 👍
+
+지금까지 왈왈 서비스의 배포 전략에 대해 이야기 해보았는데요, EB를 사용하는 데에 있어서 고민과 도입 방향에 대한 이야기, Docker Hub, compose를 통해 간단한(?) 배포에 대해 이야기해보았습니다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/06efbf21-3800-44ad-9ddb-8b0488543a11/image.png" width="100%" />
+
+최종적인 아키텍처 도식화입니다.
+아래 전체 Workflow에 대한 링크를 첨부하였는데, Star는 개발자들에게 동기부여가 되니 많은 관심부탁드립니당🙇‍
+
+> https://github.com/depromeet/WalWal-server/tree/develop/.github/workflows
+
+**Walwal 앱 설치 링크**
+https://apps.apple.com/kr/app/%EC%99%88%EC%99%88/id6553981069
