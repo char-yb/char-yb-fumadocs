@@ -1,0 +1,504 @@
+---
+title: "LocalStack과 DynamoDB 사용기"
+description: "LocalStack을 사용하여 DynamoDB를 로컬에서 테스트하는 방법에 대해 알아보았습니다."
+---
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/30c1d177-e4e4-4ab6-9ee3-84f6538038f8/image.png" width="100%" />
+
+## 서론
+최근 이직한 회사에서 입사 후 레거시 시스템을 새 프로젝트로 개선 및 기능 개발하는 중에 있었습니다.
+저희 회사 서비스 도메인 중 촬영 관련 API를 리팩토링 하는 중 DynamoDB 로직을 사용하는 영역을 개선하게 되었습니다. 첫 DynamoDB를 사용하는만큼 새 경험을 공유하고자 간단하게 DynamoDB에 대해서와 LocalStack을 사용하여 로컬 환경에서 DynamoDB를 어떻게 활용하였는 지 작성하고자 합니다!
+
+---
+
+회사 서비스는 공부 영상을 촬영하여 AI 검수를 통해 실 공부 시간을 측정합니다.
+당연하게도 공부한 Full 영상을 S3에 저장하기엔 S3 비용 측면뿐만 아니라 저장하기 위한 통신 측면에서도 그리 좋지 못하다 생각하는데, 이를 저희 서비스에서는 촬영 영상이 아닌 프레임을 Presigned Url을 사용해 저장하여 해결합니다. 그러나 촬영 프레임만으로 사용자가 실제로 공부를 얼마나 했는지와 프레임이 언제 제대로 캡처되었는 지 실시간으로 저장하여 확인하는 것보다 촬영 종료 후 쉽게 날리는 것이 Best라고 생각했어요. 그래서 실시간 촬영 정보 저장을 RDS보다는 NoSQL로 하는 것으로 하며 촬영 종료 시 촬영 결과를 RDS에 저장하는 것이 효율적이라 생각되었어요! 당연히 RDS를 사용하지 않으니 커넥션을 사용하지 않고 비용도 아낄 수 있겠죠?
+
+그래서 AWS 서비리스 기술 중 DynamoDB를 사용하게 되었고, 이를 테스트하기 위해 직접 클라우드 환경에 연결하여 테스트 하기 보다는 LocalStack을 사용하여 빠르게 테스트 해보고 개발 서버까지 배포를 진행해보았습니다. 이에 대해 이야기하기 전에 우선 DynamoDB와 LocalStack에 대해 먼저 알아보겠습니다!
+
+---
+## DynamoDB 이해
+DynamoDB는 AWS 서비스에서 제공되는 서버리스 NoSQL 데이터베이스 서비스입니다.
+모든 규모에서 고성능 애플리케이션을 실행하도록 설계된 완전 관리형으로 서버, OS 관리를 모두 AWS에서 전담합니다. 개발자가 관리할 필요가 없다는 거죠.
+보통은 Key-Value 데이터 스토어 형식으로 Key, Value 쌍을 이룹니다.
+
+### 특징
+
+>⚡ **High Availability (고가용성)**
+- 자동으로 동일한 Region 3개의 AZ에 자동으로 데이터를 복제하여 고가용성을 지원
+- 동일한 Region의 3개의 AZ에 자동으로 데이터를 복제하여 높은 가용성을 보장 (Multi AZ 지원)
+따로 설정하지 않아도 자동으로 Multi AZ가 적용됨
+- 여러 리전 간에 데이터를 자동으로 복제하여 글로벌 애플리케이션을 지원 (DynamoDB Global Table)
+<img src="https://velog.velcdn.com/images/uiurihappy/post/80edd659-cf97-4b0b-8671-ce7bcfb2e45a/image.png" width="100%" />
+
+>⚡ **Scalability (확장성)**
+- DynamoDB는 "Seemless"하게 자동 확장(Auto Scaling) 할 수 있습니다.
+- 스토리지 용량은 자동으로 무제한으로 확장이 가능.
+스토리지 용량 모드로 Provisioned, On-demand, 두 가지 모드가 지원됩니다.
+- **[Provisioned 모드] **
+Auto Scaling을 설정 가능하며 Auto Scaling을 사용하면 테이블의 읽기/쓰기 처리 용량이 자동으로 조정이 가능하며 사용자는 목표 이용률(Target Utilization)을 설정하면, DynamoDB가 자동으로 처리 용량을 확장하거나 축소가 가능.
+- **[On-demand 모드]**
+"트래픽이 예상 불가능할 경우 사용" -> Auto Scaling 설정이 없음
+(→ AWS측에서 알아서 Auto Scaling 해준다. Auto Scaling이 내장된 형태라고 생각하면 쉽다)
+
+> ⚡ **Performance (성능)**
+- **[Automatic Partitioning 기능]**
+Automatic Partitioning: 데이터의 종류나 이용 목적에 따라서 테이블을 나누어서 데이터를 보존
+Automatic Partitioning를 통해 분산 처리하여 안정한 1ms의 성능을 보여줍니다.
+- **[DynamoDB Accelerator(DAX)]**
+DAX를 활용하면 최대 10배의 읽기 작업 성능 개선 가능
+DynamoDB는 계층적 데이터(Hierarchical data) 구조를 가진 JSON 형식의 데이터를 지원
+즉, 데이터로써 JSON을 사용 가능하며 Spring에서 data class를 정의하면 된다.
+
+지금까지 DynamoDB에 대해서 간단히 알아보았고, DB 테이블 생성에 대해 간단히 알아보겠습니다.
+
+---
+
+AWS 서비스 중 `DynamoDB` 서비스를 찾아 접속하여 테이블 생성 버튼을 클릭해 생성 창으로 넘어가겠습니다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/c1249c43-c25a-4ef7-b72c-e913851463e1/image.png" width="100%" />
+
+저는 예시로 촬영(공부 기록) 정보에 대한 프레임을 저장하기 위해 위처럼 간단하게 테이블을 생성하였습니다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/30cf6f1f-bafc-45ed-ac8e-f906fd041477/image.png" width="100%" />
+
+사용자 지정 설정으로 Read/Write 용량 설정은 프로비저닝됨으로 최소 100,  최대 1000, 목표 사용률 70퍼로 설정하였습니다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/e41c98d6-be87-4b54-82bd-a9e51f7abfdc/image.png" width="100%" />
+
+추가로 record_id를 PK로 잡고 예시 항목으로 value를 넣도록 하겠습니다.
+이처럼 DynamoDB에 대해 알아보았고, 예시 테이블도 생성해보았습니다!
+
+---
+## LocalStack
+
+로컬 개발환경에서 AWS 서비스 사용에 있어 다소 불편한 점들이 있죠.
+AWS 서비스에 접근하기 위해 AccessKey, SecretKey를 선언하고 관리를 해야하는 점, 코드 레벨에서 관리할 경우 자칫 보안 사고가 발생되기에 별도 관리를 하면서 제약을 둬야하는 점이 있습니다.
+
+또한 AWS 서비스들은 다양한 인스턴스에서 접근하고 사용되기 때문에 격리된 환경을 구축하기 어려우며 이로 인해 테스트 코드도 실패하기 마련입니다.
+
+그래서 LocalStack을 도입하여 AWS 클라우드 서비스 리소스의 기능을 에뮬레이션하여 테스트해볼 수 있습니다.
+
+우선 저는 LocalStack의 CLI를 별도 설치하지 않고 원래 설치되었던 OrbStack에서 컨테이너를 띄워서 진행하겠습니다. (~~docker compose v2로 진행하는 점 참고부탁드립니다!~~)
+
+```yml
+version: '3.8'
+
+services:
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      - SERVICES=dynamodb
+      - DEBUG=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=ap-northeast-2
+    volumes:
+    - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
+    - "/var/run/docker.sock:/var/run/docker.sock"
+
+```
+
+우선 작성한 yml은 localStack 컨테이너 환경 구성입니다. 차례대로 알아보면,
+`image: localstack/localstack`: LocalStack 공식 Docker 이미지를 사용.
+`ports:  - "4566:4566"  - "4510-4559:4510-4559"`: 4566은 LocalStack의 메인 포트, 4510~4559는 내부적으로 사용될 수 있는 추가 포트 범위입니다.
+
+```yml
+environment:
+  - SERVICES=s3,dynamodb
+  - DEBUG=1
+  - DOCKER_HOST=unix:///var/run/docker.sock
+  - AWS_ACCESS_KEY_ID=test
+  - AWS_SECRET_ACCESS_KEY=test
+  - AWS_DEFAULT_REGION=ap-northeast-2
+```
+
+SERVICES=s3,dynamodb
+- LocalStack에서 활성화할 AWS 서비스 지정.
+- 여기서는 S3와 DynamoDB만 실행됨.
+
+DEBUG=1
+- 디버깅 모드 활성화.
+- 로그 출력을 자세히 볼 수 있음.
+
+DOCKER_HOST=unix:///var/run/docker.sock
+- LocalStack이 내부적으로 Docker 컨테이너를 실행할 수 있도록 설정.
+
+AWS_ACCESS_KEY_ID=test & AWS_SECRET_ACCESS_KEY=test
+- 가짜 AWS 인증 정보.
+- LocalStack은 실제 AWS에 연결되지 않으므로 어떤 값이든 설정 가능.
+
+AWS_DEFAULT_REGION=ap-northeast-2
+- 기본 AWS 리전(서울) 설정.
+
+이렇게 구성한 yml을 `docker compose -f /{docker 파일 이름} up -d`로 백그라운드 실행을 하여 컨테이너를 띄워보겠습니다.
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/462c83ba-97e7-4b84-8289-157ce77173d0/image.png" width="100%" />
+
+이렇게 컨테이너가 실행되는 것을 확인할 수 있습니다.
+저는 OrbStack을 사용하고 있지만, 아마 docker Desktop에서 컨테이너 정보를 확인하시면 실행된 컨테이너에서 CLI로 접속하기 위해 Terminal 버튼이 있으실 겁니다. 접속하여
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/917645cc-925a-4a96-98bc-5f79725cca31/image.png" width="100%" />
+
+위와 같은 화면을 확인할 수 있으십니다!
+
+저희는 촬영 기록에 대한 테이블을 localstack 환경에서 테스트를 진행해야 합니다.
+이를 위해 테스트 DB를 생성해볼텐데요, 
+
+```
+awslocal dynamodb create-table \
+    --table-name t_study_record_frame_test \
+    --key-schema AttributeName=record_id,KeyType=HASH \
+    --attribute-definitions AttributeName=record_id,AttributeType=N \
+    --billing-mode PAY_PER_REQUEST \
+    --region ap-northeast-2
+```
+위와 같이 awslocal이라는 localstack aws 서비스의 명령어부터 dynamoDB, 필요하다면 S3나 Parameter Store, SQS도 가능합니다. 테이블 생성 명령어를 한번 뜯어보겠습니다!
+`--table-name`: 생성할 테이블 이름
+`--key-schema`: AttributeName으로 키 이름 등록과 타입을 명시
+`--attribute-definitions`: 키에 대한 정의
+`--billing-mode`: PAY_PER_REQUEST 옵션은 DynamoDB 테이블을 생성할 때 온디맨드(요청당 과금) 방식으로 운영
+`--region`: 서비스 지역 region 정의
+
+<img src="https://velog.velcdn.com/images/uiurihappy/post/e3b40b27-2631-492d-9061-9a6a849f73e2/image.png" width="100%" />
+
+이와 같이 명령어를 테이블 생성이 완료되었으며, 테이블 정보를 확인하기 위해 아래 명령어를 실행해 테이블을 확인할 수 있습니다.
+
+```
+awslocal dynamodb scan \
+    --table-name {테이블 명} \
+    --region ap-northeast-2
+```
+
+이처럼 localStack 환경에서 DynamoDB 구성과 테이블 생성 및 확인을 해보았습니다.
+그 외 테이블 삭제, 데이터 삽입에 대해 관련해서는 아래 참고 문서를 확인하시면 되겠습니다!
+
+#### 참고
+문서: https://docs.localstack.cloud/overview/
+LocalStack DynamoDB 문서: https://docs.localstack.cloud/user-guide/aws/dynamodb/
+
+---
+### Spring에서는 어떻게?
+
+이제는 Spring Boot 서버 애플리케이션에서 어떻게 연동을 진행할 지, DynamoDB 테이블 엔티티 정의, 데이터 핸들링에 대해 알아보겠습니다.
+
+```yml
+spring:
+  config:
+    activate:
+      on-profile: local
+core:
+  datasource:
+    dynamo:
+      table-name: t_study_record_frame_test
+      access-key: test
+      secret-key: test
+      region: ap-northeast-2
+      endpoint: http://localhost:4566
+```
+
+```kotlin
+dependencies {
+    implementation("software.amazon.awssdk:dynamodb-enhanced")
+}
+```
+
+우선 DynamoDB 환경 세팅을 위해 yml과 의존성을 구성해보았습니다.
+이전에 생성된 테이블을 property로 등록하였고 이전에 가짜 access, secret key, region을 같이 docker compose에 구성했었죠? 실행된 컨테이너의 기본 port 번호로 4566을 등록하여 사용합니다.
+그리고 추가할 의존성은 awssdk 중 dynamodb-enhanced 의존성을 받아줍니다.
+
+```kotlin
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Primary
+import org.testcontainers.containers.localstack.LocalStackContainer
+import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.regions.Region
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient
+
+@TestConfiguration
+class LocalStackAwsConfig {
+
+    @Bean(initMethod = "start", destroyMethod = "stop")
+    fun localStackContainer(): LocalStackContainer {
+        return LocalStackContainer(
+            DockerImageName.parse("localstack/localstack"),
+        ).withServices(
+            LocalStackContainer.Service.DYNAMODB,
+        )
+    }
+
+    @Bean
+    @Primary
+    fun localStackCredentialProvider(
+        localStackContainer: LocalStackContainer,
+    ): AwsCredentialsProvider {
+        val awsBasicCredentials = AwsBasicCredentials.create(
+            localStackContainer.accessKey,
+            localStackContainer.secretKey,
+        )
+        return StaticCredentialsProvider.create(awsBasicCredentials)
+    }
+
+    @Bean
+    @Primary
+    fun localStackDynamoDBClint(
+        localStackContainer: LocalStackContainer,
+    ): DynamoDbClient {
+        val credentialProviderValue = localStackCredentialProvider(localStackContainer)
+        val dynamoDbClient = DynamoDbClient.builder()
+            .credentialsProvider(credentialProviderValue)
+            .region(Region.of(localStackContainer.region))
+            .endpointOverride(localStackContainer.endpoint)
+            .build()
+        return dynamoDbClient
+    }
+}
+
+```
+
+이번엔 localStack 환경에서의 간단한 테스트 코드를 작성해보았습니다.
+LocalStackContainer의 동작과 Credential이 정상적인지 DynamoDBClient가 localStack에서 정상 구동되는 지 확인해보았습니다.
+
+
+```kotlin
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient
+import software.amazon.awssdk.regions.Region
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient
+import java.net.URI
+
+@Configuration
+class DynamoConfig(
+    private val dynamoProperties: DynamoProperties,
+) {
+    @Bean
+    fun dynamoCredentialProvider(): AwsCredentialsProvider = StaticCredentialsProvider.create(
+        AwsBasicCredentials.create(dynamoProperties.accessKey, dynamoProperties.secretKey),
+    )
+
+    @Bean
+    fun dynamoDbClient(): DynamoDbClient {
+        val client = DynamoDbClient
+            .builder()
+            .credentialsProvider(dynamoCredentialProvider())
+            .region(Region.of(dynamoProperties.region))
+        dynamoProperties.endpoint?.let {
+            client.endpointOverride(URI.create(dynamoProperties.endpoint))
+        }
+
+        return client.build()
+    }
+
+    @Bean
+    fun dynamoDbEnhancedClient(): DynamoDbEnhancedClient {
+        return DynamoDbEnhancedClient.builder()
+            .dynamoDbClient(dynamoDbClient())
+            .build()
+    }
+}
+
+```
+
+이번엔 애플리케이션에서 DynamoClient 환경 구성을 위해 DynamoConfig를 선언하였습니다.
+(~~DynamoProperties는 여러 분들이 직접 구성하실 거라 믿어 스킵하겠습니다~~)
+
+1. AwsCredentialsProvider로 AWS 인증/인가 정보를 생명주기로 Bean을 등록
+2. 생성된 AWS 인증/인가 정보를 DynamoClient credential로 등록 후 region도 등록합니다. local 환경에서만 endpoint가 존재하기에 null 처리하여 url 등록을 결정합니다.
+3. dynamoDbEnhancedClient를 선언하여 2번에서 생성한 DynamoDbClient를 builder
+
+dynamoDbEnhancedClient는 DynamoDB 테이블의 CRUD를 제공하여 사용하였습니다.
+
+- https://docs.aws.amazon.com/ko_kr/sdk-for-java/latest/developer-guide/ddb-en-client-getting-started-dynamodbTable.html
+- https://sdk.amazonaws.com/java/api/latest/software/amazon/awssdk/enhanced/dynamodb/DynamoDbEnhancedClient.html
+
+다음으로는 DynamoEntity를 생성해보겠습니다.
+
+```kotlin
+@DynamoDbBean
+data class StudyRecordingProgressDynamoEntity(
+    @get:DynamoDbPartitionKey
+    @get:DynamoDbAttribute("record_id")
+    var recordId: Long,
+    @get:DynamoDbAttribute("value")
+    var value: String = "",
+) {
+    fun update(value: String) {
+        this.value = value
+    }
+}
+```
+
+`StudyRecordingProgressDynamoEntity`라는 엔티티로 촬영 기록에 대한 `@DynamoDbBean` 정의를 하였습니다. 각 애트리뷰트와 필드를 맵핑하기 위한 정보로서 @DynamoDbAttribute을 명시할 수 있습니다. 이를 통해 물리적인 애트리뷰트명과 필드명을 다르게 할 수 있으며 유동적으로 변동이 가능하니, value라는 Json String 값을 넣어 테스트해보겠습니다.
+
+```kotlin
+@Repository
+class StudyRecordDynamoCoreRepository(
+    dynamoProperties: DynamoProperties,
+    dynamoDbEnhancedClient: DynamoDbEnhancedClient,
+    private val objectMapper: ObjectMapper
+) : StudyRecordDynamoRepository {
+
+    private val table = dynamoDbEnhancedClient.table(
+        dynamoProperties.tableName,
+        TableSchema.fromBean(StudyRecordingProgressDynamoEntity::class.java),
+    )
+
+    override fun create(studyRecordRecordingInProgress: StudyRecordRecordingInProgress) {
+        table.putItem(
+            StudyRecordingProgressDynamoEntity(
+                recordId = studyRecordRecordingInProgress.id,
+                value = objectMapper.writeValueAsString(studyRecordRecordingInProgress)
+            )
+        )
+    }
+
+    override fun get(studyRecordId: Long): StudyRecordRecordingInProgress {
+        val key = Key.builder()
+            .partitionValue(studyRecordId)
+            .build()
+
+        val queryRequest = QueryEnhancedRequest.builder()
+            .queryConditional(QueryConditional.keyEqualTo(key))
+            .limit(1)
+            .build()
+
+        val item = table.query(queryRequest).items().firstOrNull()
+            ?: throw throw ErrorException(ErrorType.NOT_FOUND_STUDY_RECORD)
+
+        return objectMapper.readValue(item.value, StudyRecordRecordingInProgress::class.java)
+    }
+
+    override fun update(
+        studyRecordId: Long,
+        lastFrameNumber: Int,
+        lastFrameCapturedAt: LocalDateTime
+    ): StudyRecordRecordingInProgress {
+        val existingRecord = get(studyRecordId)
+        val updatedRecord = existingRecord.copy(
+            frameCount = lastFrameNumber,
+            lastFrameCapturedAt = lastFrameCapturedAt,
+        )
+        create(updatedRecord)
+        return updatedRecord
+    }
+
+    override fun delete(studyRecordId: Long) {
+        val key = Key.builder()
+            .partitionValue(studyRecordId)
+            .build()
+        table.deleteItem(key)
+    }
+}
+```
+
+이번엔 `@Repository` 어노테이션으로 선언된 CRUD Repository입니다.
+
+1. create()
+- StudyRecordRecordingInProgress 객체를 받아서 DynamoDB 테이블에 저장
+- objectMapper.writeValueAsString을 사용해 JSON 문자열로 변환
+- putItem을 이용해 DynamoDB에 삽입
+
+2. get()
+- 주어진 studyRecordId를 기반으로 조회
+- QueryEnhancedRequest를 사용해 key 기반 조회 (queryConditional.keyEqualTo)
+- 조회 결과가 없으면 예외 발생 (ErrorException(ErrorType.NOT_FOUND_STUDY_RECORD))
+- 데이터를 objectMapper.readValue로 변환 후 반환
+
+3. update()
+- 기존 데이터를 조회한 후, 특정 필드를 업데이트
+- 새 객체를 다시 저장 (create() 사용)
+- DynamoDB의 update 대신 overwrite 방식을 사용하고 있음
+
+4. delete()
+- 주어진 studyRecordId를 기반으로 삭제
+- deleteItem()을 통해 해당 키의 데이터를 제거
+
+이처럼 CRUD 기능들을 구현하면서 중간에 느낀 점으로는 어차피 key는 고유하니 
+```kotlin
+override fun get(studyRecordId: Long): StudyRecordRecordingInProgress {
+    val key = Key.builder().partitionValue(studyRecordId).build()
+    
+    val item = table.getItem(key) // Query 대신 GetItem 사용
+        ?: throw ErrorException(ErrorType.NOT_FOUND_STUDY_RECORD)
+
+    return objectMapper.readValue(item.value, StudyRecordRecordingInProgress::class.java)
+}
+```
+
+이렇게 간단히 작성해도 좋을 듯하네요..!
+직접 objectMapper로 String 변환하여 create를 하게 되면 이처럼 생성되는 것을 확인해볼 수 있습니다.
+
+```
+root@6c35c6376243:/opt/code/localstack# awslocal dynamodb scan \
+    --table-name t_study_record_frame_test \
+    --region ap-northeast-2
+{
+    "Items": [
+        {
+            "record_id": {
+                "N": "738"
+            },
+            "value": {
+                "S": "{\"id\":738,\"userId\":164,\"startedAt\":\"2025-03-02T21:04:49.603\",\"studyDate\":\"2025-03-02\",\"dailySeqNumByUser\":1,\"recordingSeconds\":0,\"frameCount\":0,\"lastFrameCapturedAt\":null,\"recordingStatus\":\"RECORDING_IN_PROGRESS\"}"
+            }
+        }
+    ],
+    "Count": 1,
+    "ScannedCount": 1,
+    "ConsumedCapacity": null
+}
+```
+
+그리고 촬영 종료 API를 호출하게 되면, 별도 트랜잭션에서 DynamoDB에서 데이터를 지워주는 것이 좋겠죠?
+아직은 그 외 트랜잭션을 다루기 위한 Conditional Update 내용이 있겠지만, 추가로 배치 처리나 이후 TTL설정 쿼리 성능 최적화에 대해서는 따로 공부를 하여 새 포스트에서 작성해보도록 하겠습니다!
+
+```kotlin
+@SpringBootTest
+@ActiveProfiles("test") // test 환경에서 실행
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+class StudyRecordDynamoRepositoryTest {
+
+    @Autowired
+    private lateinit var studyRecordDynamoRepository: StudyRecordDynamoRepository
+
+    @Test
+    fun `DynamoDB에 데이터 저장 후 조회`() {
+        val studyRecord = StudyRecordRecordingInProgress(
+            id = 1001,
+            userId = 2001,
+            recordingSeconds = 120,
+            frameCount = 10,
+            lastFrameCapturedAt = LocalDateTime.now(),
+            recordingStatus = "RECORDING_IN_PROGRESS"
+        )
+
+        studyRecordDynamoRepository.create(studyRecord)
+
+        val result = studyRecordDynamoRepository.get(1001)
+
+        assertEquals(1001, result.id)
+        assertEquals(2001, result.userId)
+    }
+}
+```
+그리고 이처럼 JUnit 테스트 코드를 작성할 수도 있습니다.
+
+이렇게 특정 요구사항에 따라 RDS를 사용하는 것이 아닌 AWS 서버리스 기술 중 DynamoDB, 그리고 이를 로컬 환경에서 실행해보기 위한 localStack에 대해서 알아보았습니다.
+
+
+
+### 참고
+- https://techblog.woowahan.com/2638/
+- https://json-object.github.io/Implementing-DynamoDB's-CRUD-in-Spring-Boot.html
